@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "source": "AWS public pricing pages; refreshed by scripts/refresh-pricing.py",
+  "retrieved": "2026-04-25",
+  "currency": "USD",
+  "applies_to_regions": [
+    "us-east-1",
+    "us-west-2",
+    "eu-west-1",
+    "eu-central-1",
+    "ap-southeast-1",
+    "ap-northeast-1"
+  ],
+  "region_specific_overrides": {},
+  "notes": "On-demand pricing. Same pricing applies across listed commercial regions by default; any region-specific divergence discovered by the refresh script is populated in region_specific_overrides. GovCloud / China regions are NOT covered by this snapshot; users running there will get a pricing.region_coverage=unknown warning. Verify current rates at https://aws.amazon.com/bedrock/pricing/ and https://aws.amazon.com/comprehend/pricing/.",
+  "bedrock": {
+    "sonnet": {
+      "model_id": "global.anthropic.claude-sonnet-4-6",
+      "input_per_mtok": 3.00,
+      "output_per_mtok": 15.00,
+      "provenance": "fallback"
+    },
+    "opus": {
+      "model_id": "global.anthropic.claude-opus-4-6-v1",
+      "input_per_mtok": 15.00,
+      "output_per_mtok": 75.00,
+      "provenance": "fallback"
+    },
+    "haiku": {
+      "model_id": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+      "input_per_mtok": 1.00,
+      "output_per_mtok": 5.00,
+      "provenance": "fallback"
+    }
+  },
+  "comprehend": {
+    "unit": "100_chars",
+    "minimum_units_per_request": 3,
+    "apis": {
+      "detect_pii_entities": {
+        "used_by_pocsynth": true,
+        "tiers": [
+          {"upto_units_per_month": 10000000,  "price_per_unit_usd": 0.0001},
+          {"upto_units_per_month": 50000000,  "price_per_unit_usd": 0.00005},
+          {"upto_units_per_month": 100000000, "price_per_unit_usd": 0.000025},
+          {"upto_units_per_month": null,       "price_per_unit_usd": 0.000005}
+        ]
+      },
+      "contains_pii_entities": {
+        "used_by_pocsynth": false,
+        "tiers": [
+          {"upto_units_per_month": 10000000,  "price_per_unit_usd": 0.000002},
+          {"upto_units_per_month": 50000000,  "price_per_unit_usd": 0.000001},
+          {"upto_units_per_month": 100000000, "price_per_unit_usd": 0.0000005},
+          {"upto_units_per_month": null,       "price_per_unit_usd": 0.0000001}
+        ]
+      }
+    }
+  }
+}

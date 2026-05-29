@@ -1,0 +1,27 @@
+PoC Accelerator Synthetic Document Generator
+
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+Licensed under the MIT No Attribution license (the "License"). You may not
+use this file except in compliance with the License. A copy of the License
+is in the "LICENSE" file accompanying this file. This file is distributed
+on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, express
+or implied. See the License for the specific language governing permissions
+and limitations under the License.
+
+**********************
+THIRD PARTY COMPONENTS
+**********************
+This software retrieves or incorporates third-party software at install
+time or run time. Those packages are subject to their own license terms.
+The list below is provided for convenience and is not exhaustive; consult
+each package's documentation for authoritative licensing information.
+
+  - PyMuPDF (AGPL-3.0) -- https://pymupdf.readthedocs.io
+  - boto3 (Apache-2.0) -- https://github.com/boto/boto3
+  - requests (Apache-2.0) -- https://requests.readthedocs.io
+  - beautifulsoup4 (MIT) -- https://www.crummy.com/software/BeautifulSoup/
+  - html2text (GPL-3.0) -- https://github.com/Alir3z4/html2text
+  - charset-normalizer (MIT) -- https://github.com/jawah/charset_normalizer
+
+Full dependency and version information is recorded in requirements.txt,
+requirements.lock, and requirements-dev.lock.

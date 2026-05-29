@@ -1,0 +1,85 @@
+# You can override the included template(s) by including variable overrides
+# SAST customization: https://docs.gitlab.com/ee/user/application_security/sast/#customizing-the-sast-settings
+# Secret Detection customization: https://docs.gitlab.com/ee/user/application_security/secret_detection/#customizing-settings
+# Dependency Scanning customization: https://docs.gitlab.com/ee/user/application_security/dependency_scanning/#customizing-the-dependency-scanning-settings
+# Container Scanning customization: https://docs.gitlab.com/ee/user/application_security/container_scanning/#customizing-the-container-scanning-settings
+stages:
+- lint
+- test
+
+.default-rules: &default-rules
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+
+.uv-image:
+  image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+
+lint:
+  extends: .uv-image
+  stage: lint
+  <<: *default-rules
+  script:
+    - uv sync --frozen --no-install-project
+    - uv run ruff check .
+
+unit-tests:
+  extends: .uv-image
+  stage: test
+  <<: *default-rules
+  script:
+    - uv sync --frozen --all-groups
+    - uv run pytest tests/unit
+
+skill-script-drift:
+  extends: .uv-image
+  stage: test
+  <<: *default-rules
+  script:
+    - uv sync --frozen --all-groups
+    # The uv slim image has no `git`, so snapshot the committed bytes
+    # before regenerating and byte-compare after.
+    - cp cc-skills/pocsynth/pocsynth.py /tmp/skill-committed.py
+    - uv run python scripts/generate-skill-script.py
+    - |
+      uv run python - <<'EOF'
+      import filecmp, sys
+      if not filecmp.cmp(
+          "/tmp/skill-committed.py",
+          "cc-skills/pocsynth/pocsynth.py",
+          shallow=False,
+      ):
+          print("cc-skills/pocsynth/pocsynth.py is stale.")
+          print("Regenerate locally: uv run python scripts/generate-skill-script.py")
+          sys.exit(1)
+      EOF
+
+deps-cve-scan:
+  image: alpine:3.20
+  stage: test
+  <<: *default-rules
+  script:
+    # The distroless anchore/grype:latest image has no shell, so GitLab
+    # can't run `script:` steps in it. Install grype into alpine instead.
+    - apk add --no-cache curl bash
+    - curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+    - grype dir:. --fail-on medium --only-fixed --exclude './.venv/**' --exclude './dist/**' --exclude './build/**'
+  allow_failure: true
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  UV_CACHE_DIR: "$CI_PROJECT_DIR/.cache/uv"
+  SAST_EXCLUDED_ANALYZERS: ""
+  SAST_EXCLUDED_PATHS: "spec, test, tests, tmp,site-packages,dist,build"
+
+cache:
+  key:
+    files:
+      - uv.lock
+  paths:
+    - .cache/uv
+    - .cache/pip
+
+include:
+  - template: Security/SAST.gitlab-ci.yml
+  - template: Security/Secret-Detection.gitlab-ci.yml

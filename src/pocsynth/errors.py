@@ -1,0 +1,88 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+"""Error hierarchy. Each subclass carries a stable `code`, its `exit_code`,
+whether a blind retry may succeed, and an optional actionable `hint`.
+
+Per-call detail lives in the instance `context` dict so agents can route
+without the top-level codes exploding in number.
+"""
+
+from __future__ import annotations
+
+
+class DocSynthError(Exception):
+    code: str = "INTERNAL_ERROR"
+    exit_code: int = 1
+    retryable: bool = False
+    hint: str | None = None
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        context: dict | None = None,
+        hint: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.context: dict = dict(context or {})
+        if hint is not None:
+            self.hint = hint
+
+
+class UsageError(DocSynthError):
+    code = "INVALID_ARGS"
+    exit_code = 2
+
+
+class InputError(DocSynthError):
+    code = "INPUT_NOT_FOUND"
+    exit_code = 3
+
+
+class InputNotPdfError(DocSynthError):
+    code = "INPUT_NOT_PDF"
+    exit_code = 3
+
+
+class UrlRejectedError(DocSynthError):
+    code = "URL_REJECTED"
+    exit_code = 3
+
+
+class AuthError(DocSynthError):
+    code = "AWS_AUTH_FAILED"
+    exit_code = 4
+
+
+class AuthExpiredError(DocSynthError):
+    code = "AWS_AUTH_EXPIRED"
+    exit_code = 4
+
+
+class UpstreamError(DocSynthError):
+    code = "BEDROCK_ERROR"
+    exit_code = 5
+    retryable = True
+
+
+class ComprehendError(DocSynthError):
+    code = "COMPREHEND_ERROR"
+    exit_code = 5
+    retryable = True
+
+
+class HttpError(DocSynthError):
+    code = "HTTP_ERROR"
+    exit_code = 5
+    retryable = True
+
+
+class PartialError(DocSynthError):
+    code = "PARTIAL_SUCCESS"
+    exit_code = 6
+
+
+class PricingDataError(DocSynthError):
+    code = "PRICING_DATA_ERROR"
+    exit_code = 2
