@@ -42,6 +42,54 @@ Each variant lands in its own directory with the same per-page structure; the PI
 
 ---
 
+## Structured data pipeline
+
+Beyond synthetic *documents*, `pocsynth` generates synthetic *tabular data* through a four-stage pipeline. It splits cleanly into a **paid half you run once** and a **free half you run unlimited times**:
+
+```
+extract  (paid)  PDF ─────────────► data sample (records / field observations) + PII audit
+schema   (paid)  sample | prompt ─► generation-ready schema + data dictionary + lint report
+            (free)  your schema ───► lint / document / --fix          (offline)
+generate (free)  schema | preset ─► synthetic rows (CSV/JSON, typed, seeded, weighted enums)
+test     (free)  rows + schema ───► validation report (exit 7 if invalid)
+```
+
+**The cost story:** extract a schema from **one** real PDF (one or two paid Bedrock calls), then `generate` thousands of rows for **free**, offline, forever.
+
+```bash
+# Fastest path — a bundled preset, zero AWS, instant:
+pocsynth presets                                            # b2b_saas, ecommerce_orders, healthcare_lite
+pocsynth generate --preset b2b_saas --rows 1000 --seed 42 -o ./out
+pocsynth test --rows ./out/rows.csv --schema ./out/schema.json
+
+# From a natural-language description (one small paid call):
+pocsynth schema --from-prompt "a B2B SaaS company's customer accounts with plan tier and MRR" -o ./out
+pocsynth generate --schema ./out/schema.json --rows 5000
+
+# From a real document (the cost-saver):
+pocsynth estimate report.pdf --for extract                 # offline cost gate
+pocsynth extract report.pdf -o ./out                       # paid; PII-audited
+pocsynth schema --from-sample ./out/sample.json -o ./out   # paid; review ./out/schema.md
+pocsynth generate --schema ./out/schema.json --rows 10000  # free, unlimited
+```
+
+**PII is structurally barred from synthetic output.** `extract` audits the values it pulls (Amazon Comprehend, on by default), and `schema --infer` never lets a real PII value become an `enum` — PII fields are bound to Faker providers and the real values are discarded. The **generated dataset is safe to share**; the extract sample and audit CSV are not.
+
+**Determinism.** `--seed` makes generation byte-reproducible. **Distributions:** low-cardinality `enum` fields carry real-world frequency weights (inferred from the source document, model-proposed, or uniform — your choice via `--distribution`).
+
+### Demo UI
+
+A local web UI (Metabase-style) ships behind an optional extra:
+
+```bash
+pip install 'pocsynth[ui]'
+pocsynth ui                                                 # http://127.0.0.1:8000
+```
+
+Pick a preset, describe a business, or upload a seed document → preview 10 rows → download any size. Built with FastAPI + HTMX; calls the same core as the CLI.
+
+---
+
 ## Quick example
 
 Using the public **AWS Marketplace Standard Contract** (25 pages, ~$0.58 on Sonnet, ~3 min):

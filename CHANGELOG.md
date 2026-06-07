@@ -5,6 +5,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — structured-data pipeline (extract → schema → generate → test)
+- **Four new CLI commands** turning `pocsynth` into a synthetic *tabular data* generator alongside document synthesis:
+  - **`generate --schema|--preset --rows --seed --format csv|json`** — offline Faker generation. Deterministic with `--seed`, typed serialization (ISO-8601 dates in both CSV and JSON), weighted `enum` distributions, and fail-fast on unknown Faker providers. Free; touches no AWS.
+  - **`test --rows --schema`** — offline validation of rows against a schema (type / enum / regex). Exit code **7** (`DATA_INVALID`) with a structured violation report when rows don't conform. Free.
+  - **`extract PDF [--schema]`** — Bedrock structured extraction via forced `toolConfig` (ADR-0002): discovery mode (field observations + value counts) or conform mode (records matching a schema). Audits extracted values with Comprehend by default and flags PII fields. Paid.
+  - **`schema --from-sample|--from-prompt|--from-schema [--fix] [--distribution]`** — builds a generation-ready schema from an extract sample or a natural-language description (paid, forced `emit_schema`), or lints/documents/auto-fixes a user schema (free, offline). Emits a Markdown data dictionary + a lint report.
+  - **`presets`** — lists the bundled schemas (`b2b_saas`, `ecommerce_orders`, `healthcare_lite`).
+  - **`estimate <path> --for convert|extract|schema`** — the pre-flight estimator now covers the paid pipeline stages (ADR-0007), keeping one cost-gate idiom across every Bedrock-spending command.
+- **PII guard (ADR-0005)** — `schema --infer` never lets a real PII value become an `enum`; PII fields (Comprehend-flagged or bound to an identifying Faker provider) are bound to Faker and the real values discarded, with the suppression surfaced in the lint report. An offline `lint_schema` rule backstops the same invariant for user-authored schemas. The generated dataset is safe to share; the extract sample and audit CSV are not.
+- **Demo web UI** (`pocsynth ui`, optional `pocsynth[ui]` extra; ADR-0009) — FastAPI + HTMX, Metabase-style fill-in-the-blank sentence with three seed sources (preset / describe-a-business / upload-a-document), a 10-row preview, and CSV/JSON download. Calls the same core as the CLI; HTMX pinned with Subresource Integrity. Untrusted HTTP inputs are bounded (row cap, upload-size cap, session-cache eviction).
+- **New modules:** `schema.py` (shared model: validation, typing, lint/fix/document, distribution helpers, toolspec builders), `generate.py`, `validate.py`, `schemagen.py`, `extract.py`, `presets/`, `ui/`. `bedrock.read_tool_use` shared by both paid stages. `faker` added as a core dependency (pinned, and inlined into the skill bundle).
+- **Tests (+~90):** unit tests for schema/generate/validate/presets/extraction/schemagen/paid-estimates including the generate→test round-trip across every type in both formats; plus `tests/scenarios/` — three SA demo-data scenarios (customer-data-seeded with a PII non-leak guarantee, public-data-seeded, prompt-seeded) driven through both the CLI and the UI. Full suite **261 passed**.
+- **9 ADRs + research notes + CONTEXT.md** under `docs/` capturing the design (native-Bedrock extraction, forced toolConfig, the four-stage pipeline, distributions, the PII guard, typed coercion, estimate coverage, schema-from-prompt, the UI stack).
+- **SKILL.md + RECIPES.md** — the new commands, the paid/free split, the PII posture, exit code 7, and five new recipes (generate a dataset, validate it, the full pipeline cost-saver, describe-a-business, launch the UI).
+
 ### Added — cost estimation
 - **`pocsynth estimate PDF --model --pages --pii-audit`** — offline pre-flight cost estimator. Heuristic-based (±30-50%): reads text chars from the PDF, applies a chars/token ratio + per-page image-token constant + output-token constant, looks up Bedrock + Comprehend rates from the bundled pricing file. Exit codes and envelope match the existing agent-friendly contract.
 - **`result.cost` block in `convert` envelopes** — post-flight, exact cost from the Bedrock token usage returned by Converse plus Comprehend char count from the combined output. Non-breaking additive change at schema 1.

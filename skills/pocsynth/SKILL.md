@@ -1,12 +1,15 @@
 ---
 name: pocsynth
 description: >
-  Convert PDFs to synthetic HTML/Markdown via Amazon Bedrock, or audit
-  existing documents for PII with Amazon Comprehend. Use when the user
-  asks to synthesize a document, redact PII, scan a file for sensitive
-  data, or convert a PDF for safe sharing. The skill ships a
-  self-contained Python CLI (`./pocsynth.py`) that returns a stable JSON
-  envelope with classifiable exit codes.
+  Convert PDFs to synthetic HTML/Markdown via Amazon Bedrock, audit
+  documents for PII with Amazon Comprehend, and generate synthetic
+  tabular datasets (CSV/JSON) from a schema, a preset, a natural-language
+  business description, or a real document. Use when the user asks to
+  synthesize a document, redact PII, scan a file for sensitive data,
+  generate fake/test/demo data, build a synthetic dataset, or extract a
+  reusable data schema from a sample PDF. The skill ships a self-contained
+  Python CLI (`./pocsynth.py`) that returns a stable JSON envelope with
+  classifiable exit codes.
 ---
 
 # pocsynth
@@ -61,14 +64,39 @@ it otherwise.
 
 Subcommands:
 
-| Command | Purpose |
-|---|---|
-| `convert PDF` | Convert a PDF to synthetic HTML/Markdown. Envelope now includes `result.cost` with post-run Bedrock + Comprehend $ figures. |
-| `pii-audit FILE` | Re-scan a local text/HTML/MD file with Comprehend. |
-| `estimate PDF` | **Pre-flight cost estimate** (offline, heuristic, ±30-50%). Takes `--model`, `--pages`, `--pii-audit`. Use before running `convert` on anything >20 pages or with Opus. |
-| `models` | List available Bedrock models + default. |
-| `doctor` | Probe Python + boto3 + pymupdf + AWS creds + Bedrock + Comprehend. |
-| `version` | Print script version. |
+| Command | Purpose | AWS? |
+|---|---|---|
+| `convert PDF` | Convert a PDF to synthetic HTML/Markdown. `result.cost` has post-run Bedrock + Comprehend $. | paid |
+| `extract PDF` | Pull structured **records** (with `--schema`) or field **observations** (discovery) from a PDF via forced tool use. PII-audits the extracted values by default. | paid |
+| `schema` | Build a generation-ready schema: `--from-sample` (from an extract), `--from-prompt` (from a description), or `--from-schema` (lint/document/`--fix` an existing one, offline). | infer/prompt paid; lint free |
+| `generate` | Produce synthetic **rows** from `--schema` or `--preset`. `--rows`, `--seed`, `--format csv\|json`. | **free** |
+| `test` | Validate generated rows against a schema. Exit **7** (`DATA_INVALID`) if rows violate it. | **free** |
+| `presets` | List bundled preset schemas (b2b_saas, ecommerce_orders, healthcare_lite). | **free** |
+| `pii-audit FILE` | Re-scan a local text/HTML/MD file with Comprehend. | paid |
+| `estimate <path>` | **Pre-flight cost estimate** (offline, ±30-50%). `--for convert\|extract\|schema`. Use before any paid run >20 pages or with Opus. | free |
+| `ui` | Launch the demo web UI (requires `pip install 'pocsynth[ui]'`). | — |
+| `models` | List available Bedrock models + default. | free |
+| `doctor` | Probe Python + boto3 + pymupdf + AWS creds + Bedrock + Comprehend. | paid (tiny) |
+| `version` | Print script version. | free |
+
+## Structured-data pipeline (extract → schema → generate → test)
+
+`pocsynth` also generates **synthetic tabular data**, not just documents. The
+pipeline splits into a **paid half** (run once) and a **free half** (unlimited):
+
+- **Free, no AWS, no `doctor` needed:** `generate`, `test`, `presets`, and
+  `schema --from-schema` (lint). Start here for "make me a demo dataset" — see
+  RECIPES Recipe 5/6.
+- **Paid (Bedrock), gate with `estimate --for`:** `extract` (PDF → sample) and
+  `schema --from-sample`/`--from-prompt` (sample/description → schema). The
+  cost-saver flow (RECIPES Recipe 7): extract a schema from ONE real PDF, then
+  `generate` thousands of rows for free.
+
+**PII posture (important):** `extract` audits the extracted values for PII by
+default, and `schema --infer` **never** lets a real PII value become an enum —
+PII fields are bound to Faker providers and the real values are discarded. So
+the **generated dataset is safe to share**, but the **extract sample and the
+PII-audit CSV contain real values and are not**.
 
 ## Cost awareness
 
@@ -156,6 +184,7 @@ fresh environment.
 | 4 | AWS auth failed or expired | Tell the user to refresh credentials (`aws sso login`, `aws configure`, etc.). Do not retry blindly. |
 | 5 | Upstream (Bedrock / Comprehend / HTTP) | If `error.retryable: true`, retry with exponential backoff (2s, 4s, 8s, abort). Otherwise surface. |
 | 6 | Partial success | Some pages processed, some failed. Check `result.output.pages_processed` vs `pages_attempted` and `result.page_failures[]`. Surface the summary; the partial output is still on disk. |
+| 7 | Data invalid (`test` only) | Generated rows violate the schema. Read `result.context.report.violations` (row/field/rule each) and surface a summary. **Do not retry** — the data or schema needs fixing. |
 
 Always read and surface `error.hint` to the user — it's written to be
 actionable for both humans and agents.
@@ -178,6 +207,19 @@ actionable for both humans and agents.
 
     # Standalone PII audit of an existing file
     ./pocsynth.py --json pii-audit converted_doc.html --redact-values
+
+    # Synthetic dataset from a preset (free, offline)
+    ./pocsynth.py --json generate --preset b2b_saas --rows 1000 --seed 42 -o ./out
+    ./pocsynth.py --json test --rows ./out/rows.csv --schema ./out/schema.json
+
+    # Full pipeline: real PDF -> reusable schema -> unlimited free rows
+    ./pocsynth.py --json estimate report.pdf --for extract          # cost gate
+    ./pocsynth.py --json extract report.pdf -o ./out                # paid, PII-audited
+    ./pocsynth.py --json schema --from-sample ./out/sample.json -o ./out  # paid
+    ./pocsynth.py --json generate --schema ./out/schema.json --rows 10000 --seed 1  # free
+
+    # Describe a business -> schema (no document)
+    ./pocsynth.py --json schema --from-prompt "a B2B SaaS company's accounts" -o ./out
 
 ## Installing the skill system-wide
 
