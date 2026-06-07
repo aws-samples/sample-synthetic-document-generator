@@ -217,6 +217,41 @@ def _emit_human(command: str, obj: dict[str, Any]) -> None:
             + (f" + Comprehend ${comp.get('cost_usd', 0):.4f}" if comp else "")
             + ") · [dim]heuristic, ±30-50%[/]"
         )
+    elif command == "generate":
+        out = result.get("output", {})
+        _stderr.print(f"  rows: [bold]{out.get('rows_written')}[/] → {out.get('rows_path')}")
+        _stderr.print("  cost: [bold]$0.00[/] (offline Faker)")
+    elif command == "test":
+        verdict = "[green]valid[/]" if result.get("valid") else "[red]INVALID[/]"
+        _stderr.print(f"  {verdict}  rows checked: {result.get('rows_checked')}  "
+                      f"violations: {len(result.get('violations', []))}")
+    elif command == "schema":
+        out = result.get("output", {})
+        lint = result.get("lint", {})
+        _stderr.print(f"  mode: [bold]{result.get('input', {}).get('mode')}[/]  "
+                      f"fields: {result.get('fields')}  lint issues: {lint.get('issues_total', 0)}")
+        cost = result.get("cost")
+        if cost:
+            _stderr.print(f"  cost: [bold]${cost.get('total_cost_usd', 0):.4f}[/]")
+        else:
+            _stderr.print("  cost: [bold]$0.00[/] (offline)")
+        if out.get("schema_path"):
+            _stderr.print(f"  schema: {out.get('schema_path')}")
+    elif command == "extract":
+        out = result.get("output", {})
+        _stderr.print(f"  mode: [bold]{result.get('input', {}).get('mode')}[/]  "
+                      f"records: {out.get('records_extracted')}  "
+                      f"pages: {out.get('pages_processed')}/{out.get('pages_attempted')}")
+        pa = result.get("pii_audit", {})
+        if pa.get("enabled"):
+            _stderr.print(f"  PII: {pa.get('entities_found', 0)} entities; "
+                          f"flagged fields: {', '.join(pa.get('pii_fields', [])) or 'none'}")
+        cost = result.get("cost")
+        if cost:
+            _stderr.print(f"  cost: [bold]${cost.get('total_cost_usd', 0):.4f}[/]")
+    elif command == "presets":
+        for p in result.get("presets", []):
+            _stderr.print(f"  [bold]{p['name']}[/] — {p['description']}")
     if not _STDOUT_IS_TTY and not _FORCE_QUIET_STDOUT:
         emit(obj, json_mode=True)
 
