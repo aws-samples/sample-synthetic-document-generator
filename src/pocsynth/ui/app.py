@@ -32,6 +32,11 @@ from pocsynth.schemagen import SchemaConfig, run_schema
 # In-memory schema store keyed by a session id (demo-grade; not for production).
 _SCHEMA_STORE: dict[str, dict[str, Any]] = {}
 
+# Guardrails (demo UI takes untrusted HTTP input, unlike the trusted CLI).
+MAX_DOWNLOAD_ROWS = 1_000_000   # ceiling on /download row count
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024   # 25 MB cap on uploaded seed PDFs
+MAX_SCHEMA_STORE = 256          # bound the session schema cache (FIFO eviction)
+
 
 # --------------------------------------------------------------------------- #
 # Injected clients (overridden in tests; built from the AWS session otherwise)
@@ -131,7 +136,13 @@ def create_app() -> FastAPI:
                 bedrock = _client(get_bedrock_client)
                 comprehend = _client(get_comprehend_client)
                 # Read PDF text locally, audit for PII, infer a schema from a sample.
-                pdf_bytes = seed_document.file.read()
+                pdf_bytes = seed_document.file.read(MAX_UPLOAD_BYTES + 1)
+                if len(pdf_bytes) > MAX_UPLOAD_BYTES:
+                    return HTMLResponse(
+                        '<div id="preview"><p>Upload too large (max '
+                        f'{MAX_UPLOAD_BYTES // (1024 * 1024)} MB).</p></div>',
+                        status_code=413,
+                    )
                 text = _pdf_text(pdf_bytes)
                 detected = scan_for_pii(
                     text, folder_name=str(tdp / "pii-audit"),
@@ -179,6 +190,9 @@ def create_app() -> FastAPI:
 
         # Stash the schema for the download step (no second model call).
         sid = request.cookies.get("sid") or uuid.uuid4().hex
+        # Bound the cache: FIFO-evict the oldest entry when over the cap.
+        if sid not in _SCHEMA_STORE and len(_SCHEMA_STORE) >= MAX_SCHEMA_STORE:
+            _SCHEMA_STORE.pop(next(iter(_SCHEMA_STORE)), None)
         _SCHEMA_STORE[sid] = schema
         resp = HTMLResponse(_render_preview(schema, preview_rows, cost=cost, pii_note=pii_note))
         resp.set_cookie("sid", sid, httponly=True, samesite="strict")
@@ -196,12 +210,15 @@ def create_app() -> FastAPI:
         if schema is None:
             return PlainTextResponse("No previewed schema; run a preview first.",
                                      status_code=400)
+        # Clamp to a sane ceiling so a stray/large value can't exhaust memory.
+        rows = max(0, min(rows, MAX_DOWNLOAD_ROWS))
+        fmt = format if format in ("csv", "json") else "csv"
         with tempfile.TemporaryDirectory() as td:
             gen = run_generation(GenerateConfig(schema=schema, rows=rows, seed=seed,
-                                                export_format=format, output_dir=td))
+                                                export_format=fmt, output_dir=td))
             body = Path(gen["output"]["rows_path"]).read_text(encoding="utf-8")
-        media = "text/csv" if format == "csv" else "application/json"
-        fname = "synthetic_data." + ("csv" if format == "csv" else "json")
+        media = "text/csv" if fmt == "csv" else "application/json"
+        fname = "synthetic_data." + fmt
         return PlainTextResponse(body, media_type=media, headers={
             "content-disposition": f'attachment; filename="{fname}"'})
 
