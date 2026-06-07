@@ -481,6 +481,25 @@ pocsynth estimate <PDF|SAMPLE> [--for convert|extract|schema] [--model …] [--p
   (ADR-0006 — the shared serialize/coerce path means format must not matter). Pure offline; proves
   generate and test agree across types and formats.
 
+### SA demo-data scenario tests (acceptance specs — `tests/scenarios/`, committed with this plan)
+Three realistic Solutions-Architect workflows, each driven **both** through the CLI/core functions
+(`test_cli_demo_scenarios.py`) and through the UI (`test_ui_demo_scenarios.py`), no AWS (stub clients
+injected; shared fixtures/stubs in `tests/scenarios/conftest.py`). They are the executable acceptance
+bar for Slices 1/2/4 and are **skipped via a module-level `skipif`** until the corresponding modules
+land (`pocsynth.generate` for the pipeline, the `[ui]` extra + `pocsynth.ui.app` for the UI), then flip
+to enforced.
+- **S1 — customer-run, customer-data-seeded:** `extract` (PII audit on) → `schema --infer` →
+  `generate` → `test` on a PDF carrying real PII. **Asserts the headline guarantee:** none of the real
+  values (`CUSTOMER_PII_VALUES`) appear in the generated rows **or** the shared schema; PII fields are
+  bound to Faker (no real-value enums); non-PII categoricals keep their enums; same-seed runs are
+  byte-identical. The UI variant asserts the same non-leak through `/preview` + `/download`.
+- **S2 — SA-run, public-data-seeded:** `extract` over a public catalog (Comprehend finds nothing) →
+  `schema --infer --distribution infer` → 500 rows → `test` valid; inferred weights tracked within
+  tolerance. Plus the **preset** path (fully offline, instant) as the fastest SA demo.
+- **S3 — SA-run, prompt-seeded:** `schema --from-prompt` (no document) → `generate` → `test` valid;
+  asserts `distribution=infer` downgrades to `synthetic` (no `value_counts`) and the UI surfaces cost
+  and never fires the paid call on page load.
+
 ---
 
 ## Skill / docs impact
@@ -523,27 +542,36 @@ it in the repo's single-language story.
 > with seed **[42]**."
 
 - **Row count** pill → `generate --rows`.
-- **Business type** pill → either a **preset** (`load_preset`, instant/free) **or** "✏️ describe my
-  own…" which reveals a text box → `schema --from-prompt` (paid, ADR-0008).
+- **Business type** pill → three **seed sources** (the three SA scenarios this UI must serve):
+  1. **preset** (`load_preset`, instant/free) — the SA's fastest demo path;
+  2. **"✏️ describe my own…"** → a text box → `schema --from-prompt` (paid, ADR-0008) — no document;
+  3. **"⬆ upload a seed document"** → a PDF upload → `extract` (+ PII audit) → `schema --infer` (paid)
+     — covers **S1 (customer runs it locally on their own PII doc)** and **S2 (SA seeds from public
+     data)**. The same PII guard (ADR-0005) applies, so a customer-data seed never leaks real values
+     into the previewed/downloaded rows.
 - **Format** pill → `csv`|`json`. **Seed** pill → deterministic `--seed`.
 - *Deliberately omitted from v1* (Metabase has them, our core doesn't yet): growth / variation /
   granularity / year — these are **time-series** controls and v1 has no temporal/distribution-over-time
   model (Risks, ADR-0004 scope). The pills are listed in a "coming soon" affordance, not faked.
 
 ### Flow (mirrors Metabase's 3 steps)
-1. Pick pills (preset) or describe a business. Preview button.
-2. **Preview** = `schema` (preset load = free; from-prompt = one paid call, **behind the explicit
-   button + the ADR-0007 cost gate**, never on keystroke) → `generate --rows 10` (free) → render the
-   inferred **schema** (the data dictionary from `document_schema`) + a **10-row table**.
+1. Choose a seed source — preset, describe-a-business, or upload-a-document. Preview button.
+2. **Preview** = `schema` (preset load = free; from-prompt / uploaded-doc = paid, **behind the explicit
+   button + the ADR-0007 cost gate**, never on keystroke; uploaded-doc also runs `extract` + PII audit)
+   → `generate --rows 10` (free) → render the inferred **schema** (data dictionary from
+   `document_schema`) + a **10-row table**, and for paid paths the **cost** + any PII suppressions.
 3. **Download** = `generate --rows <N>` at the chosen format → file. Free, instant, reuses the
    previewed schema (no second model call — same "spec cached, export is free" property as Metabase).
 
-### Endpoints (all call core functions directly)
+### Endpoints (all call core functions directly; paid clients via FastAPI deps `get_bedrock_client` /
+`get_comprehend_client` so tests override them)
 - `GET /` → the sentence-builder page. `GET /presets` → pills (`list_presets`).
-- `POST /preview` → `{schema, rows[10], cost}` (HTMX swaps the preview pane). `POST /download` →
-  streamed CSV/JSON. `GET /healthz`.
-- A from-prompt preview surfaces the estimated/actual **cost** in the UI before/after the call,
-  honoring the same $0.10-gate guidance as the skill.
+- `POST /preview` → accepts a `preset` name, a `prompt`, **or** a `seed_document` upload (+ `rows`);
+  returns `{schema, rows[10], cost, pii?}` (HTMX swaps the preview pane). `POST /download` →
+  streamed CSV/JSON from the previewed schema. `GET /healthz`.
+- A paid preview surfaces the estimated/actual **cost** in the UI, honoring the same $0.10-gate
+  guidance as the skill; an uploaded customer document is audited and its real values never reach the
+  preview or the download (the Scenario-1 guarantee, enforced by ADR-0005 in the shared core).
 
 ### Out of scope for the demo
 Auth, multi-user, persistence, the Metabase "launch & explore" handoff, time-series controls, and

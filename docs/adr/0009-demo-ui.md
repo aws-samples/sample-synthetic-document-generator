@@ -19,10 +19,19 @@ subprocess or second envelope serialization. Streamlit was considered but its
 rerun-on-interaction model is awkward around a *paid* LLM call; explicit
 endpoints make the cost gate cleaner.
 
-**Scope:** only `generate`-half value is demoed — preset (free, instant) or
-`schema --from-prompt` (paid, behind an explicit button + the ADR-0007 cost gate)
-→ preview → download. Metabase's growth/variation/granularity/year pills are
-**time-series** controls the core doesn't model (ADR-0004 scope) — shown as
-"coming soon", not faked. No auth, persistence, multi-user, Metabase handoff, or
-pixel-matched styling. Depends on ADR-0003 (core verbs) and ADR-0008 (the
-from-prompt path the "AI" mode needs).
+**Scope:** three seed sources, matching the three SA demo-data scenarios the UI
+must serve: (1) a bundled **preset** (free, instant); (2) **describe a business**
+→ `schema --from-prompt` (paid); (3) **upload a seed document** → `extract` (+ PII
+audit) → `schema --infer` (paid) — this covers a customer running it locally on
+their own PII-bearing document and an SA seeding from public data. All paid paths
+sit behind an explicit button + the ADR-0007 cost gate. The Scenario-1 guarantee
+(real values never leak into preview or download) is enforced by ADR-0005 in the
+shared core, so it holds identically on the web path. Paid Bedrock/Comprehend
+clients are FastAPI dependencies (`get_bedrock_client` / `get_comprehend_client`)
+so tests override them with stubs and no AWS is touched.
+
+Metabase's growth/variation/granularity/year pills are **time-series** controls
+the core doesn't model (ADR-0004 scope) — shown as "coming soon", not faked. No
+auth, persistence, multi-user, Metabase handoff, or pixel-matched styling.
+Depends on ADR-0003 (core verbs), ADR-0008 (the from-prompt "AI" mode), and
+ADR-0005 (the PII guard that makes uploaded-document seeding safe).
