@@ -9,6 +9,7 @@ when seeded, touching no AWS. This is the free half of the pipeline.
 from __future__ import annotations
 
 import csv
+import io
 import json
 import re
 import time
@@ -326,3 +327,53 @@ def run_generation(cfg: GenerateConfig, on_event: EventCallback = None) -> dict[
         "cost": None,
         "warnings": [],
     }
+
+
+def stream_rows(
+    schema: dict[str, Any],
+    rows: int,
+    *,
+    export_format: str = "csv",
+    seed: int | None = None,
+    locale: str = "en_US",
+):
+    """Yield a dataset as text chunks without materializing it in memory.
+
+    Used by the web UI's /download so the row count is bounded only by patience,
+    not RAM. Generates one row at a time and yields serialized text:
+      - csv  → a header line, then one CSV line per row
+      - json → a streamed JSON array (`[`, comma-separated objects, `]`)
+    Deterministic when seeded, identical field semantics to run_generation.
+    """
+    schema_mod._validate_schema_shape(schema)
+    if rows < 0:
+        raise SchemaError("rows must be >= 0", context={"rows": rows})
+
+    fake = Faker(locale)
+    if seed is not None:
+        fake.seed_instance(seed)
+    generators = _resolve_field_generators(schema, fake)
+    names = [n for n, _t, _g in generators]
+
+    if export_format == "json":
+        yield "[\n"
+        for i in range(rows):
+            obj = {
+                name: schema_mod.serialize(gen(), ftype, "json")
+                for name, ftype, gen in generators
+            }
+            yield ("  " + json.dumps(obj)) + (",\n" if i < rows - 1 else "\n")
+        yield "]\n"
+    else:
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=names, lineterminator="\n")
+        writer.writeheader()
+        yield buf.getvalue()
+        for _ in range(rows):
+            buf.seek(0)
+            buf.truncate(0)
+            writer.writerow({
+                name: schema_mod.serialize(gen(), ftype, "csv")
+                for name, ftype, gen in generators
+            })
+            yield buf.getvalue()

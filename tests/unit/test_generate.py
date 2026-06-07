@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from pocsynth.errors import SchemaError
-from pocsynth.generate import GenerateConfig, run_generation
+from pocsynth.generate import GenerateConfig, run_generation, stream_rows
 
 
 def _schema(fields, name="t"):
@@ -93,3 +93,36 @@ class TestJson:
         rows = json.loads(Path(res["output"]["rows_path"]).read_text())
         assert isinstance(rows[0]["n"], int)
         assert isinstance(rows[0]["ok"], bool)
+
+
+class TestStreamRows:
+    """stream_rows yields the full dataset without materializing it (UI download)."""
+
+    def test_csv_stream_header_plus_rows(self):
+        s = _schema([{"name": "a", "type": "integer", "faker": "random_int"},
+                     {"name": "b", "type": "string", "enum": ["x", "y"]}])
+        text = "".join(stream_rows(s, 5000, export_format="csv", seed=1))
+        lines = [ln for ln in text.splitlines() if ln.strip()]
+        assert lines[0] == "a,b"
+        assert len(lines) == 5001  # header + 5000
+
+    def test_json_stream_is_valid_array(self):
+        s = _schema([{"name": "a", "type": "integer", "faker": "random_int"}])
+        text = "".join(stream_rows(s, 250, export_format="json", seed=2))
+        rows = json.loads(text)
+        assert len(rows) == 250 and isinstance(rows[0]["a"], int)
+
+    def test_stream_is_deterministic(self):
+        s = _schema([{"name": "a", "type": "string", "faker": "name"}])
+        one = "".join(stream_rows(s, 50, seed=9))
+        two = "".join(stream_rows(s, 50, seed=9))
+        assert one == two
+
+    def test_stream_matches_batch_generation(self, tmp_path):
+        # Streamed CSV equals the batch run_generation CSV for the same seed.
+        s = _schema([{"name": "a", "type": "integer", "faker": "random_int"},
+                     {"name": "b", "type": "string", "enum": ["x", "y"], "weights": {"x": .6, "y": .4}}])
+        streamed = "".join(stream_rows(s, 100, export_format="csv", seed=42))
+        run_generation(GenerateConfig(schema=s, rows=100, seed=42, output_dir=str(tmp_path)))
+        batch = (Path(tmp_path) / "rows.csv").read_text()
+        assert streamed.strip() == batch.strip()

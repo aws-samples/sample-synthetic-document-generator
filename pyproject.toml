@@ -92,6 +92,9 @@ select = ["E", "F", "W", "I", "T20"]
 # The bundled skill script is machine-generated from src/pocsynth/.
 # Do not lint; changes go via `scripts/generate-skill-script.py`.
 "skills/pocsynth/pocsynth.py" = ["ALL"]
+# The demo UI embeds HTML/CSS/font-URL templates as string literals; long
+# lines there are markup, not code. Logic in this file still obeys E501 in review.
+"src/pocsynth/ui/app.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,12 +1,15 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
-"""FastAPI + HTMX demo UI over the structured-data pipeline (ADR-0009).
+"""FastAPI + HTMX web app over the structured-data pipeline (ADR-0009).
 
-A thin layer: every endpoint calls the same core functions and reads the same
-artifacts as the CLI. Three seed sources — preset (free), prompt (paid), upload
-(paid) — feed `schema`, then `generate` produces a 10-row preview and the full
-download. Paid Bedrock/Comprehend clients are FastAPI dependencies so tests and
-the real app swap them.
+A real data-generation utility (not a demo): compose a dataset by tuning pills —
+business domain, schema shape, time range, growth/variation/granularity — or
+describe a custom dataset in your own words. The pills compose a precise prompt
+that Bedrock turns into a schema; `generate` then produces the rows. Preview is
+capped at a sample, but downloads stream the FULL requested row count (no cap).
+
+Every endpoint calls the same core functions and reads the same artifacts as the
+CLI. Bedrock/Comprehend clients are FastAPI dependencies so tests can swap them.
 
 Run: `pocsynth ui`  (or `uvicorn pocsynth.ui.app:app`).
 """
@@ -21,21 +24,50 @@ from typing import Any
 
 import fitz
 from fastapi import FastAPI, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, StreamingResponse
 
-from pocsynth import presets as presets_mod
 from pocsynth.comprehend import scan_for_pii
-from pocsynth.generate import GenerateConfig, run_generation
+from pocsynth.generate import GenerateConfig, run_generation, stream_rows
 from pocsynth.schema import _validate_schema_shape, field_names
 from pocsynth.schemagen import SchemaConfig, run_schema
 
-# In-memory schema store keyed by a session id (demo-grade; not for production).
+# In-memory schema store keyed by a session id.
 _SCHEMA_STORE: dict[str, dict[str, Any]] = {}
 
-# Guardrails (demo UI takes untrusted HTTP input, unlike the trusted CLI).
-MAX_DOWNLOAD_ROWS = 1_000_000   # ceiling on /download row count
+PREVIEW_ROWS = 10               # rows shown in the preview pane
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024   # 25 MB cap on uploaded seed PDFs
-MAX_SCHEMA_STORE = 256          # bound the session schema cache (FIFO eviction)
+MAX_SCHEMA_STORE = 512          # bound the session schema cache (FIFO eviction)
+# Downloads stream row-by-row (constant memory), so the only ceiling is a
+# sanity backstop against a typo'd 10-billion request, not a product limit.
+MAX_DOWNLOAD_ROWS = 100_000_000
+
+# Pill vocabularies — drive the composed prompt. Advertising + marketing added.
+BUSINESS_TYPES = [
+    "B2B SaaS", "B2C SaaS", "Ecommerce", "Advertising", "Marketing",
+    "Healthcare", "Fintech", "Education", "Retail", "Manufacturing",
+    "Transportation", "Hospitality", "Real Estate", "Media & Entertainment",
+    "Gaming", "Insurance", "Logistics", "Energy & Utilities",
+]
+SCHEMA_SHAPES = {
+    "one-big-table": "a single denormalized wide table (one big table / OBT)",
+    "star-schema": "a star schema with a central fact table and dimension tables",
+}
+GROWTH = ["steady", "spike", "decline", "seasonal", "hypergrowth"]
+VARIATION = ["low", "medium", "high"]
+GRANULARITY = ["hourly", "daily", "weekly", "monthly"]
+YEARS = ["2021", "2022", "2023", "2024", "2025", "2026"]
+
+# A strong worked example for the custom / describe path.
+EXAMPLE_PROMPT = (
+    "A digital advertising platform's campaign performance dataset: one row per "
+    "ad-campaign per day. Columns: campaign_id, advertiser_name, channel "
+    "(search/social/display/video/native), objective (awareness/consideration/"
+    "conversion), audience_segment, country, device (desktop/mobile/tablet), "
+    "impressions, clicks, ctr, spend_usd, conversions, revenue_usd, roas, "
+    "cpc_usd, cpm_usd, and date over calendar 2025 with seasonal Q4 lift, "
+    "realistic funnel ratios (clicks << impressions, conversions << clicks), and "
+    "a few under-performing campaigns as outliers."
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -61,8 +93,49 @@ def _html_escape(s: str) -> str:
     return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
+_PREVIEW_CSS = """
+<style>
+ #preview .pv{background:var(--card); border:1px solid var(--line); border-radius:16px;
+   padding:clamp(1.2rem,3vw,2rem); box-shadow:0 18px 40px -28px var(--shadow);
+   animation:fade .3s ease;}
+ #preview .pv-head{display:flex; align-items:baseline; justify-content:space-between;
+   gap:1rem; flex-wrap:wrap; border-bottom:1px solid var(--line); padding-bottom:.9rem;}
+ #preview h3{font-family:'Fraunces',serif; font-weight:600; font-size:1.45rem; margin:0;
+   letter-spacing:-.01em;}
+ #preview h3 span{color:var(--ink-soft); font-weight:400; font-style:italic;}
+ #preview .badges{display:flex; gap:.5rem; flex-wrap:wrap;}
+ #preview .badge{font-family:'JetBrains Mono',monospace; font-size:.7rem; letter-spacing:.04em;
+   padding:.3rem .6rem; border-radius:7px; display:inline-flex; align-items:center; gap:.35rem;}
+ #preview .badge.free{background:var(--teal-soft); color:var(--teal);}
+ #preview .badge.cost{background:var(--vermilion-soft); color:var(--vermilion);}
+ #preview .badge.pii{background:#fbf3d8; color:var(--gold);}
+ #preview .tablewrap{overflow:auto; margin:1.1rem 0; border:1px solid var(--line);
+   border-radius:12px; max-height:420px;}
+ #preview table{border-collapse:collapse; width:100%; font-family:'JetBrains Mono',monospace;
+   font-size:.78rem;}
+ #preview thead th{position:sticky; top:0; background:var(--ink); color:var(--card);
+   text-align:left; padding:.55rem .7rem; font-weight:500; letter-spacing:.03em; white-space:nowrap;}
+ #preview tbody td{padding:.45rem .7rem; border-bottom:1px solid var(--line);
+   color:var(--ink); white-space:nowrap;}
+ #preview tbody tr:nth-child(odd){background:rgba(255,255,255,.5);}
+ #preview tbody tr:hover{background:var(--teal-soft);}
+ #preview .dl{display:flex; gap:.7rem; align-items:center; flex-wrap:wrap;}
+ #preview .dl button{font-family:'Hanken Grotesk',sans-serif; font-weight:600; font-size:.9rem;
+   border:1.5px solid var(--ink); background:#fff; color:var(--ink); border-radius:10px;
+   padding:.6rem 1.1rem; cursor:pointer; box-shadow:2px 2px 0 var(--ink);
+   transition:transform .12s, box-shadow .12s;}
+ #preview .dl button:hover{transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--teal);}
+ #preview .dl small{color:var(--ink-soft); font-size:.8rem;}
+ #preview .dlrows{font-family:'JetBrains Mono',monospace; font-size:.8rem; color:var(--ink-soft);
+   display:inline-flex; align-items:center;}
+ #preview .dlrows input{width:7rem; font:inherit; color:var(--ink); border:1px solid var(--line);
+   border-radius:8px; padding:.5rem .6rem; background:#fff;}
+ #preview .dlrows input:focus{outline:none; border-color:var(--teal);}
+</style>"""
+
+
 def _render_preview(schema: dict, rows: list[dict], *, cost: float | None,
-                    pii_note: str | None) -> str:
+                    pii_note: str | None, full_rows: int, seed: int) -> str:
     cols = field_names(schema)
     head = "".join(f"<th>{_html_escape(c)}</th>" for c in cols)
     body = ""
@@ -70,22 +143,34 @@ def _render_preview(schema: dict, rows: list[dict], *, cost: float | None,
         body += "<tr>" + "".join(
             f"<td>{_html_escape(str(row.get(c, '')))}</td>" for c in cols
         ) + "</tr>"
-    cost_line = (
-        f'<p class="cost">Estimated cost for this preview: '
-        f'<strong>${cost:.4f}</strong></p>' if cost is not None
-        else '<p class="cost">cost: <strong>$0.00</strong> (offline)</p>'
+    if cost is not None:
+        cost_badge = f'<span class="badge cost">◆ schema ≈ ${cost:.4f}</span>'
+    else:
+        cost_badge = '<span class="badge free">● $0.00 · offline</span>'
+    pii_badge = (
+        f'<span class="badge pii" title="{_html_escape(pii_note)}">⚠ PII audited</span>'
+        if pii_note else ""
     )
-    pii_line = f'<p class="pii">{_html_escape(pii_note)}</p>' if pii_note else ""
+    schema_name = _html_escape(str(schema.get("name", "dataset")))
     return (
-        '<div id="preview">'
-        f"<h3>Generated data — sample of {len(rows)} rows</h3>"
-        f"{cost_line}{pii_line}"
-        f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
-        '<form hx-post="/download" hx-swap="none">'
-        '<input type="hidden" name="rows" value="1000">'
-        '<button type="submit" name="format" value="csv">Download CSV (1000 rows)</button> '
-        '<button type="submit" name="format" value="json">Download JSON</button>'
-        "</form></div>"
+        _PREVIEW_CSS
+        + '<div id="preview"><div class="pv">'
+        + '<div class="pv-head">'
+        + f'<h3>{schema_name} <span>· {len(rows)}-row sample</span></h3>'
+        + f'<div class="badges">{cost_badge}{pii_badge}'
+        + f'<span class="badge free">{len(cols)} fields</span></div>'
+        + "</div>"
+        + f'<div class="tablewrap"><table><thead><tr>{head}</tr></thead>'
+        + f"<tbody>{body}</tbody></table></div>"
+        + '<form class="dl" hx-post="/download" hx-swap="none">'
+        + f'<input type="hidden" name="seed" value="{int(seed)}">'
+        + '<label class="dlrows">rows&nbsp;'
+        + f'<input type="number" name="rows" value="{int(full_rows)}" min="1" '
+        + 'step="1000"></label>'
+        + '<button type="submit" name="format" value="csv">↓ CSV</button>'
+        + '<button type="submit" name="format" value="json">↓ JSON</button>'
+        + "<small>full dataset · streamed · free · reuses this schema</small>"
+        + "</form></div></div>"
     )
 
 
@@ -98,61 +183,53 @@ def create_app() -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
-        return _INDEX_HTML
-
-    @app.get("/presets", response_class=HTMLResponse)
-    def list_presets_endpoint() -> str:
-        opts = '<option value="">— none (use prompt or upload below) —</option>'
-        opts += "".join(
-            f'<option value="{_html_escape(p["name"])}">{_html_escape(p["description"])}</option>'
-            for p in presets_mod.list_presets()
-        )
-        return f'<select name="preset">{opts}</select>'
+        return _render_index()
 
     @app.post("/preview", response_class=HTMLResponse)
     def preview(
         request: Request,
-        rows: int = Form(10),
-        preset: str | None = Form(None),
+        rows: int = Form(100),
+        business: str | None = Form(None),
+        shape: str = Form("one-big-table"),
+        year: str | None = Form(None),
+        growth: str | None = Form(None),
+        variation: str | None = Form(None),
+        granularity: str | None = Form(None),
         prompt: str | None = Form(None),
+        seed: int = Form(42),
         seed_document: UploadFile | None = None,
     ) -> HTMLResponse:
         cost: float | None = None
         pii_note: str | None = None
+        rows = max(1, rows)
 
-        # Lazy client resolution: only the paid branches build/inject a client,
-        # so the free preset path never touches AWS. Honors test overrides.
         def _client(dep):
             override = request.app.dependency_overrides.get(dep)
             return (override or dep)()
 
-        # An empty string from the form's default <option> counts as "unset".
-        preset = preset or None
         prompt = (prompt or "").strip() or None
+        business = business or None
 
         with tempfile.TemporaryDirectory() as td:
             tdp = Path(td)
             if seed_document is not None and seed_document.filename:
                 bedrock = _client(get_bedrock_client)
                 comprehend = _client(get_comprehend_client)
-                # Read PDF text locally, audit for PII, infer a schema from a sample.
                 pdf_bytes = seed_document.file.read(MAX_UPLOAD_BYTES + 1)
                 if len(pdf_bytes) > MAX_UPLOAD_BYTES:
                     return HTMLResponse(
-                        '<div id="preview"><p>Upload too large (max '
+                        '<div id="preview"><p class="placeholder">Upload too large (max '
                         f'{MAX_UPLOAD_BYTES // (1024 * 1024)} MB).</p></div>',
                         status_code=413,
                     )
                 text = _pdf_text(pdf_bytes)
-                detected = scan_for_pii(
-                    text, folder_name=str(tdp / "pii-audit"),
-                    filename="upload", comprehend=comprehend,
-                )
+                detected = scan_for_pii(text, folder_name=str(tdp / "pii-audit"),
+                                        filename="upload", comprehend=comprehend)
                 pii_fields = _pii_field_names(text, comprehend)
                 pii_note = (
                     f"PII audit: {len(detected)} entities found; "
                     f"{len(pii_fields)} field(s) flagged — real values are barred "
-                    "from the synthetic output."
+                    "from the generated output."
                 )
                 sample = {
                     "schema": 1, "source": seed_document.filename or "upload",
@@ -168,61 +245,87 @@ def create_app() -> FastAPI:
                                               output_dir=str(tdp), bedrock_client=bedrock))
                 schema = json.loads(Path(res["output"]["schema_path"]).read_text())
                 cost = _rough_cost(res["output"].get("bedrock_usage", {}))
-            elif prompt:
+            else:
+                # Pills OR a free-text prompt → compose a precise NL prompt and
+                # infer the schema from it (the same Bedrock path).
+                effective = prompt or _compose_prompt(
+                    business or "B2B SaaS", shape, year, growth, variation, granularity
+                )
                 bedrock = _client(get_bedrock_client)
-                res = run_schema(SchemaConfig(prompt=prompt, output_dir=str(tdp),
+                res = run_schema(SchemaConfig(prompt=effective, output_dir=str(tdp),
                                               bedrock_client=bedrock))
                 schema = json.loads(Path(res["output"]["schema_path"]).read_text())
                 cost = _rough_cost(res["output"].get("bedrock_usage", {}))
-            elif preset:
-                schema = presets_mod.load_preset(preset)
-            else:
-                return HTMLResponse(
-                    '<div id="preview"><p>No data — choose a preset, describe a '
-                    'business, or upload a document.</p></div>'
-                )
 
             _validate_schema_shape(schema)
-            gen = run_generation(GenerateConfig(schema=schema, rows=min(rows, 10),
-                                                seed=42, export_format="json",
+            gen = run_generation(GenerateConfig(schema=schema, rows=PREVIEW_ROWS,
+                                                seed=seed, export_format="json",
                                                 output_dir=str(tdp)))
             preview_rows = json.loads(Path(gen["output"]["rows_path"]).read_text())
 
-        # Stash the schema for the download step (no second model call).
+        # Stash the schema + the requested full count for the download step.
         sid = request.cookies.get("sid") or uuid.uuid4().hex
-        # Bound the cache: FIFO-evict the oldest entry when over the cap.
         if sid not in _SCHEMA_STORE and len(_SCHEMA_STORE) >= MAX_SCHEMA_STORE:
             _SCHEMA_STORE.pop(next(iter(_SCHEMA_STORE)), None)
         _SCHEMA_STORE[sid] = schema
-        resp = HTMLResponse(_render_preview(schema, preview_rows, cost=cost, pii_note=pii_note))
+        resp = HTMLResponse(_render_preview(schema, preview_rows, cost=cost,
+                                            pii_note=pii_note, full_rows=rows, seed=seed))
         resp.set_cookie("sid", sid, httponly=True, samesite="strict")
         return resp
 
     @app.post("/download")
     def download(
         request: Request,
-        rows: int = Form(1000),
+        rows: int = Form(100),
         format: str = Form("csv"),
         seed: int = Form(42),
     ):
         sid = request.cookies.get("sid")
         schema = _SCHEMA_STORE.get(sid) if sid else None
         if schema is None:
-            return PlainTextResponse("No previewed schema; run a preview first.",
+            return PlainTextResponse("No schema yet; run a preview first.",
                                      status_code=400)
-        # Clamp to a sane ceiling so a stray/large value can't exhaust memory.
         rows = max(0, min(rows, MAX_DOWNLOAD_ROWS))
         fmt = format if format in ("csv", "json") else "csv"
-        with tempfile.TemporaryDirectory() as td:
-            gen = run_generation(GenerateConfig(schema=schema, rows=rows, seed=seed,
-                                                export_format=fmt, output_dir=td))
-            body = Path(gen["output"]["rows_path"]).read_text(encoding="utf-8")
         media = "text/csv" if fmt == "csv" else "application/json"
-        fname = "synthetic_data." + fmt
-        return PlainTextResponse(body, media_type=media, headers={
-            "content-disposition": f'attachment; filename="{fname}"'})
+        fname = f"{schema.get('name', 'dataset')}.{fmt}"
+        # Stream row-by-row → constant memory → the full requested count, no cap.
+        return StreamingResponse(
+            stream_rows(schema, rows, export_format=fmt, seed=seed),
+            media_type=media,
+            headers={"content-disposition": f'attachment; filename="{fname}"'},
+        )
 
     return app
+
+
+def _compose_prompt(business, shape, year, growth, variation, granularity) -> str:
+    """Turn the pill selections into a precise natural-language schema request."""
+    shape_desc = SCHEMA_SHAPES.get(shape, SCHEMA_SHAPES["one-big-table"])
+    parts = [
+        f"A realistic {business} business dataset, modeled as {shape_desc}.",
+    ]
+    if year:
+        parts.append(f"Cover the {year} calendar year")
+        if granularity:
+            parts[-1] += f" at {granularity} granularity"
+        parts[-1] += "."
+    elif granularity:
+        parts.append(f"Use {granularity} granularity.")
+    traits = []
+    if growth:
+        traits.append(f"{growth} growth")
+    if variation:
+        traits.append(f"{variation} variation/noise")
+    if traits:
+        parts.append("Exhibit " + " and ".join(traits) + " over the time range.")
+    parts.append(
+        "Choose the columns a data analyst would expect for this domain — "
+        "identifiers, dimensions, categorical attributes with realistic value "
+        "distributions, dates, and the key numeric metrics — with believable "
+        "relationships between them and a few outliers."
+    )
+    return " ".join(parts)
 
 
 # --------------------------------------------------------------------------- #
@@ -277,49 +380,253 @@ def _rough_cost(usage: dict) -> float | None:
         return None
 
 
+def _opts(values, *, default=None, labels=None) -> str:
+    """Build <option> tags; mark `default` selected."""
+    out = []
+    for v in values:
+        label = (labels or {}).get(v, v)
+        sel = " selected" if v == default else ""
+        out.append(f'<option value="{_html_escape(str(v))}"{sel}>{_html_escape(str(label))}</option>')
+    return "".join(out)
+
+
+def _render_index() -> str:
+    """Fill the index template's pill option lists + the worked example."""
+    return (
+        _INDEX_HTML
+        .replace("__BUSINESS__", _opts(BUSINESS_TYPES, default="B2B SaaS"))
+        .replace("__SHAPE__", _opts(
+            list(SCHEMA_SHAPES), default="one-big-table",
+            labels={"one-big-table": "One Big Table (OBT)",
+                    "star-schema": "Star Schema (multi-table)"}))
+        .replace("__YEAR__", _opts(YEARS, default="2025"))
+        .replace("__GROWTH__", _opts(GROWTH, default="steady"))
+        .replace("__VARIATION__", _opts(VARIATION, default="medium"))
+        .replace("__GRAN__", _opts(GRANULARITY, default="daily"))
+        .replace("__PREVIEWN__", str(PREVIEW_ROWS))
+        .replace("__EXAMPLE__", _html_escape(EXAMPLE_PROMPT))
+        .replace("__EXAMPLE_JSON__", json.dumps(EXAMPLE_PROMPT))
+    )
+
+
 app = create_app()
 
 
 _INDEX_HTML = """<!DOCTYPE html>
 <html lang="en"><head>
-<meta charset="utf-8"><title>pocsynth — Synthetic Data Generator</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pocsynth · synthetic data</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..900;1,9..144,400..600&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://unpkg.com/htmx.org@2.0.3/dist/htmx.min.js"
  integrity="sha384-0895/pl2MU10Hqc6jd4RvrthNlDiE9U1tWmX7WRESftEDRosgxNsQG/Ze9YMRzHq"
  crossorigin="anonymous"></script>
 <style>
- body{font-family:system-ui,sans-serif;max-width:880px;margin:2rem auto;padding:0 1rem;color:#1a1a2e}
- h1{font-size:1.8rem}
- .sentence{font-size:1.25rem;line-height:2.2;background:#f6f7fb;padding:1.5rem;border-radius:12px}
- select,input[type=number],input[type=text]{font-size:1rem;padding:.2rem .4rem;border-radius:8px;
-   border:1px solid #cdd;background:#fff}
- input[name=prompt]{width:100%;margin-top:.6rem}
- button{background:#3b82f6;color:#fff;border:0;border-radius:8px;padding:.5rem 1rem;cursor:pointer}
- table{border-collapse:collapse;margin-top:1rem;width:100%}
- th,td{border:1px solid #e3e3ef;padding:.3rem .5rem;font-size:.85rem;text-align:left}
- .cost{color:#475569}.pii{color:#b45309;font-weight:600}
- fieldset{border:1px solid #e3e3ef;border-radius:10px;margin-top:1rem}
+ :root{
+   --ink:#1c1a17; --ink-soft:#5c554b; --paper:#f4efe6; --card:#fbf8f2;
+   --line:#ddd4c4; --teal:#1f6f63; --teal-soft:#e3efec; --vermilion:#c8451f;
+   --vermilion-soft:#f6e3da; --gold:#b3902f; --shadow:rgba(28,26,23,.10);
+ }
+ *{box-sizing:border-box}
+ html{-webkit-font-smoothing:antialiased}
+ body{
+   margin:0; color:var(--ink); background:var(--paper);
+   font-family:'Hanken Grotesk',system-ui,sans-serif; line-height:1.5;
+   background-image:radial-gradient(var(--line) .5px,transparent .5px);
+   background-size:22px 22px;
+ }
+ .wrap{max-width:1080px; margin:0 auto; padding:clamp(1.5rem,4vw,3.5rem) clamp(1rem,4vw,2rem) 4rem;}
+ /* masthead */
+ .mast{display:flex; align-items:baseline; justify-content:space-between;
+   border-bottom:2px solid var(--ink); padding-bottom:.9rem; margin-bottom:.5rem;
+   flex-wrap:wrap; gap:.5rem;}
+ .mast h1{font-family:'Fraunces',serif; font-optical-sizing:auto; font-weight:600;
+   font-size:clamp(2rem,5vw,3.3rem); letter-spacing:-.02em; margin:0; line-height:.95;}
+ .mast h1 em{font-style:italic; color:var(--vermilion);}
+ .kicker{font-family:'JetBrains Mono',monospace; font-size:.72rem; letter-spacing:.18em;
+   text-transform:uppercase; color:var(--ink-soft);}
+ .tagline{font-size:1.02rem; color:var(--ink-soft); margin:.8rem 0 2.2rem; max-width:54ch;}
+ .tagline b{color:var(--teal); font-weight:600;}
+ .layout{display:grid; grid-template-columns:1fr; gap:2rem;}
+ @media(min-width:900px){.layout{grid-template-columns:1.6fr 1fr;}}
+ /* the spec card */
+ .card{background:var(--card); border:1px solid var(--line); border-radius:18px;
+   padding:clamp(1.4rem,3vw,2.4rem); box-shadow:0 18px 40px -28px var(--shadow);
+   position:relative; overflow:hidden;}
+ .card::before{content:""; position:absolute; inset:0 0 auto 0; height:5px;
+   background:linear-gradient(90deg,var(--teal) 0 60%,var(--vermilion) 60% 100%);}
+ .sentence{font-family:'Fraunces',serif; font-weight:400; font-size:clamp(1.35rem,2.6vw,1.85rem);
+   line-height:2.1; letter-spacing:-.01em; color:var(--ink); margin:.6rem 0 0;}
+ /* pills */
+ .pill{display:inline-flex; align-items:center; gap:.35em; vertical-align:baseline;
+   font-family:'Hanken Grotesk',sans-serif; font-weight:600; font-size:.62em;
+   background:#fff; border:1.5px solid var(--ink); border-radius:999px;
+   padding:.18em .7em; margin:0 .1em; cursor:pointer; position:relative;
+   box-shadow:2px 2px 0 var(--ink); transition:transform .12s ease, box-shadow .12s ease;}
+ .pill:hover{transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--ink);}
+ .pill:active{transform:translate(1px,1px); box-shadow:1px 1px 0 var(--ink);}
+ .pill select,.pill input{appearance:none; border:0; background:transparent; outline:none;
+   font:inherit; color:inherit; cursor:pointer; padding:0 .9em 0 0; margin:0;}
+ .pill::after{content:"▾"; position:absolute; right:.55em; font-size:.7em; color:var(--ink-soft);
+   pointer-events:none;}
+ .pill.num::after{content:none;}
+ .pill.num input{width:2.6em; text-align:center; padding:0;}
+ .pill.teal{background:var(--teal-soft); border-color:var(--teal); box-shadow:2px 2px 0 var(--teal);}
+ .pill.teal:hover{box-shadow:3px 3px 0 var(--teal);}
+ /* seed source tabs */
+ .seeds{margin-top:1.8rem; border-top:1px dashed var(--line); padding-top:1.4rem;}
+ .seedtabs{display:flex; gap:.4rem; flex-wrap:wrap; margin-bottom:1rem;}
+ .seedtab{font-family:'JetBrains Mono',monospace; font-size:.7rem; letter-spacing:.05em;
+   text-transform:uppercase; border:1px solid var(--line); background:#fff;
+   border-radius:8px; padding:.5rem .8rem; cursor:pointer; color:var(--ink-soft);
+   display:flex; align-items:center; gap:.4rem; transition:all .15s ease;}
+ .seedtab .tag{font-size:.62rem; padding:.05rem .4rem; border-radius:5px;}
+ .seedtab .tag.free{background:var(--teal-soft); color:var(--teal);}
+ .seedtab .tag.paid{background:var(--vermilion-soft); color:var(--vermilion);}
+ .seedtab[aria-selected="true"]{border-color:var(--ink); color:var(--ink);
+   box-shadow:inset 0 -3px 0 var(--gold); background:#fff;}
+ .seedpane{display:none;}
+ .seedpane.on{display:block; animation:fade .25s ease;}
+ @keyframes fade{from{opacity:0; transform:translateY(4px);}to{opacity:1; transform:none;}}
+ .seedpane label{font-size:.85rem; color:var(--ink-soft); display:block; margin-bottom:.4rem;}
+ .field{width:100%; font-family:'Hanken Grotesk',sans-serif; font-size:1rem;
+   border:1px solid var(--line); border-radius:10px; padding:.7rem .9rem; background:#fff;
+   color:var(--ink);}
+ .field:focus{outline:none; border-color:var(--teal); box-shadow:0 0 0 3px var(--teal-soft);}
+ textarea.field{font-family:'JetBrains Mono',monospace; font-size:.82rem; line-height:1.6;
+   resize:vertical; min-height:6rem;}
+ .linkbtn{margin-top:.5rem; background:none; border:0; color:var(--teal); cursor:pointer;
+   font-family:'JetBrains Mono',monospace; font-size:.74rem; padding:0; text-decoration:underline;}
+ .full-pill{margin-top:.6rem;}
+ /* run button */
+ .run{margin-top:1.6rem; display:flex; align-items:center; gap:1rem; flex-wrap:wrap;}
+ .run button{font-family:'Hanken Grotesk',sans-serif; font-weight:700; font-size:1rem;
+   color:var(--card); background:var(--ink); border:0; border-radius:12px;
+   padding:.85rem 1.6rem; cursor:pointer; display:inline-flex; align-items:center; gap:.5rem;
+   box-shadow:0 8px 20px -10px var(--shadow); transition:transform .12s ease, background .2s;}
+ .run button:hover{transform:translateY(-2px); background:var(--vermilion);}
+ .run small{color:var(--ink-soft); font-size:.82rem;}
+ .htmx-request .run button{opacity:.6; pointer-events:none;}
+ .spin{display:none;} .htmx-request .spin{display:inline-block; animation:rot 1s linear infinite;}
+ @keyframes rot{to{transform:rotate(360deg);}}
+ /* aside: how it works */
+ aside{font-size:.92rem;}
+ aside h2{font-family:'Fraunces',serif; font-weight:600; font-size:1.3rem; margin:.2rem 0 1rem;}
+ .step{display:flex; gap:.8rem; margin-bottom:1.1rem;}
+ .step .n{flex:0 0 1.9rem; height:1.9rem; border-radius:50%; border:1.5px solid var(--ink);
+   font-family:'Fraunces',serif; font-weight:600; display:flex; align-items:center;
+   justify-content:center; font-size:.95rem;}
+ .step p{margin:.15rem 0; color:var(--ink-soft);}
+ .step b{color:var(--ink); font-weight:600;}
+ .ledger{font-family:'JetBrains Mono',monospace; font-size:.74rem; color:var(--ink-soft);
+   border:1px dashed var(--line); border-radius:10px; padding:.9rem 1rem; margin-top:1.4rem;
+   line-height:1.9;}
+ .ledger .free{color:var(--teal);} .ledger .paid{color:var(--vermilion);}
+ /* preview */
+ #preview{margin-top:2.4rem;}
+ .placeholder{font-family:'Fraunces',serif; font-style:italic; font-size:1.15rem;
+   color:var(--ink-soft); border:1px dashed var(--line); border-radius:16px;
+   padding:2.4rem; text-align:center; background:var(--card);}
 </style></head><body>
-<h1>Open Source Synthetic Data Generator</h1>
-<form hx-post="/preview" hx-target="#preview" hx-encoding="multipart/form-data">
- <div class="sentence">
-  I want to generate a
-  <input type="number" name="rows" value="10" min="1" max="10" style="width:4rem"> row dataset
-  preview, seeded by &hellip;
-  <fieldset><legend>1 — pick a preset (free)</legend>
-   <span hx-get="/presets" hx-trigger="load" hx-swap="innerHTML">
-     <select name="preset"><option value="b2b_saas">B2B SaaS</option></select>
-   </span>
-  </fieldset>
-  <fieldset><legend>2 — or describe a business (uses Bedrock)</legend>
-   <input type="text" name="prompt" placeholder="e.g. a B2B SaaS company's customer accounts">
-  </fieldset>
-  <fieldset><legend>3 — or upload a seed document (uses Bedrock; PII audited)</legend>
-   <input type="file" name="seed_document" accept="application/pdf">
-  </fieldset>
-  <p><button type="submit">Preview &uarr;</button>
-   <small>Preview is 10 rows. Downloads generate any size, free.</small></p>
+<div class="wrap">
+ <header class="mast">
+   <h1>Synthetic Data <em>Foundry</em></h1>
+   <span class="kicker">pocsynth · bedrock + faker</span>
+ </header>
+ <p class="tagline">A real data-generation utility. Compose a dataset like a sentence,
+   preview the shape, then export the <b>full set at any row count</b> — generation
+   streams locally and free.</p>
+
+ <div class="layout">
+  <form class="card" hx-post="/preview" hx-target="#preview" hx-swap="outerHTML"
+        hx-encoding="multipart/form-data" hx-indicator="this">
+   <p class="sentence">
+     Generate a
+     <span class="pill num"><input type="number" name="rows" value="1000" min="1" step="100"></span>
+     row dataset for a
+     <span class="pill"><select name="business">__BUSINESS__</select></span>
+     business, as
+     <span class="pill"><select name="shape">__SHAPE__</select></span>,
+     covering
+     <span class="pill"><select name="year">__YEAR__</select></span>
+     with
+     <span class="pill"><select name="growth">__GROWTH__</select></span> growth,
+     <span class="pill"><select name="variation">__VARIATION__</select></span> variation,
+     and
+     <span class="pill"><select name="granularity">__GRAN__</select></span> granularity.
+   </p>
+
+   <div class="seeds">
+    <div class="seedtabs" role="tablist">
+      <button type="button" class="seedtab" role="tab" aria-selected="true"
+        onclick="pickSeed(this,'pills')">▣ Compose with pills</button>
+      <button type="button" class="seedtab" role="tab" aria-selected="false"
+        onclick="pickSeed(this,'custom')">✎ Describe your own <span class="tag paid">custom</span></button>
+      <button type="button" class="seedtab" role="tab" aria-selected="false"
+        onclick="pickSeed(this,'upload')">⬆ Match a document <span class="tag paid">PII-safe</span></button>
+    </div>
+    <div class="seedpane on" data-seed="pills">
+      <label>The sentence above composes the prompt. Bedrock designs the schema;
+        generation is free.</label>
+    </div>
+    <div class="seedpane" data-seed="custom">
+      <label>Describe exactly the dataset you need — columns, ranges, relationships.
+        The more specific, the better the schema.</label>
+      <textarea class="field" name="prompt" rows="5"
+        placeholder="Describe your dataset…">__EXAMPLE__</textarea>
+      <button type="button" class="linkbtn" onclick="loadExample()">↻ load the worked example</button>
+    </div>
+    <div class="seedpane" data-seed="upload">
+      <label>Upload a real document to mirror its shape. Values are PII-audited and
+        never reach the output.</label>
+      <input class="field" type="file" name="seed_document" accept="application/pdf">
+    </div>
+   </div>
+
+   <div class="run">
+     <button type="submit"><span class="spin">◠</span> Preview&nbsp;↑</button>
+     <small>Preview shows a __PREVIEWN__-row sample. Download generates the full count, streamed &amp; free.</small>
+   </div>
+  </form>
+
+  <aside>
+   <h2>How it works</h2>
+   <div class="step"><div class="n">1</div><div>
+     <p><b>Compose or describe.</b> Tune the pills for a common domain, write your
+     own spec, or upload a document to mirror.</p></div></div>
+   <div class="step"><div class="n">2</div><div>
+     <p><b>Preview the shape.</b> Bedrock designs the schema; see the columns and a
+     sample of rows before committing.</p></div></div>
+   <div class="step"><div class="n">3</div><div>
+     <p><b>Export the full set.</b> Stream CSV or JSON at any row count — the schema
+     is reused, so rows cost nothing.</p></div></div>
+   <div class="ledger">
+     <div><span class="free">●</span> generate · stream · download — <span class="free">free, local, unlimited</span></div>
+     <div><span class="paid">●</span> schema design — <span class="paid">one bedrock call, ~pennies</span></div>
+     <div style="margin-top:.4rem">uploaded documents are PII-audited &amp; barred from output</div>
+   </div>
+  </aside>
  </div>
-</form>
-<div id="preview"><p>No data yet — make a choice above and click Preview.</p></div>
+
+ <div id="preview">
+   <p class="placeholder">No data yet — compose the sentence and press Preview.</p>
+ </div>
+</div>
+
+<script>
+ function pickSeed(tab, which){
+   document.querySelectorAll('.seedtab').forEach(t=>t.setAttribute('aria-selected', t===tab));
+   document.querySelectorAll('.seedpane').forEach(p=>
+     p.classList.toggle('on', p.dataset.seed===which));
+   // Clear competing inputs so the chosen source wins server-side.
+   if(which!=='custom'){const e=document.querySelector('[name=prompt]'); if(e)e.value='';}
+   if(which!=='upload'){const e=document.querySelector('[name=seed_document]'); if(e)e.value='';}
+ }
+ function loadExample(){
+   const e=document.querySelector('[name=prompt]'); if(e) e.value=__EXAMPLE_JSON__;
+ }
+</script>
 </body></html>
 """

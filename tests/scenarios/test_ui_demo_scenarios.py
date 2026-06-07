@@ -50,56 +50,117 @@ def _override(app, *, bedrock=None, comprehend=None):
 
 
 # --------------------------------------------------------------------------- #
-# Page + presets load (offline)
+# Page + pill sentence
 # --------------------------------------------------------------------------- #
-class TestPageAndPresets:
-    def test_index_renders_sentence_builder(self, client):
+class TestPageAndPills:
+    def test_index_renders_pill_sentence(self, client):
         r = client.get("/")
         assert r.status_code == 200
-        # The Metabase-style fill-in-the-blank sentence is present.
-        assert "row dataset" in r.text.lower()
+        # The Metabase-style fill-in-the-blank sentence (with pills) is present.
+        assert "row dataset for a" in r.text.lower()
+        assert 'class="pill' in r.text
         assert "healthz" not in r.text
 
-    def test_presets_endpoint_lists_bundled_schemas(self, client):
-        r = client.get("/presets")
-        assert r.status_code == 200
-        # at least one pill option comes back
-        assert r.text.strip()
+    def test_index_includes_advertising_and_marketing(self, client):
+        r = client.get("/")
+        assert ">Advertising<" in r.text and ">Marketing<" in r.text
+
+    def test_index_carries_the_worked_example(self, client):
+        r = client.get("/")
+        # The strong custom-prompt example is embedded in the describe textarea.
+        assert "advertising platform" in r.text.lower()
+        assert "roas" in r.text.lower()
 
     def test_healthz(self, client):
         assert client.get("/healthz").status_code == 200
 
 
 # --------------------------------------------------------------------------- #
-# Scenario 1 — customer uploads their own PII document to the local UI
+# Scenario A — compose with pills (the default utility path)
 # --------------------------------------------------------------------------- #
-class TestScenario1UICustomerDataSeeded:
-    def test_preview_audits_pii_and_output_has_no_real_values(
-        self, client, customer_pdf
-    ):
+class TestPillCompose:
+    def test_pills_compose_prompt_and_preview(self, client):
+        app = client.app
+        _override(app, bedrock=bedrock_schema_stub(schema_fields=[
+            {"name": "campaign_id", "type": "string", "regex": "C[0-9]{5}"},
+            {"name": "channel", "type": "string", "enum": ["search", "social"]},
+            {"name": "spend_usd", "type": "number", "faker": "pyfloat"},
+        ]))
+        r = client.post("/preview", data={
+            "business": "Advertising", "shape": "one-big-table", "year": "2025",
+            "growth": "seasonal", "variation": "high", "granularity": "daily",
+            "rows": "5000",
+        })
+        assert r.status_code == 200
+        assert "campaign_id" in r.text
+        # The download form carries the full requested row count, not a demo cap.
+        assert 'value="5000"' in r.text
+
+    def test_download_streams_full_count_uncapped(self, client):
+        app = client.app
+        _override(app, bedrock=bedrock_schema_stub(schema_fields=[
+            {"name": "id", "type": "integer", "faker": "random_int"},
+            {"name": "tier", "type": "string", "enum": ["A", "B", "C"]},
+        ]))
+        client.post("/preview", data={"business": "Marketing", "rows": "100"})
+        # Far above the old 1k demo cap — must stream the full set.
+        r = client.post("/download", data={"rows": "25000", "format": "csv", "seed": "7"})
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/csv")
+        lines = [ln for ln in r.text.splitlines() if ln.strip()]
+        assert len(lines) == 25001  # header + 25,000 rows
+
+    def test_download_json_full_count(self, client):
+        app = client.app
+        _override(app, bedrock=bedrock_schema_stub(schema_fields=[
+            {"name": "x", "type": "string", "faker": "word"}]))
+        client.post("/preview", data={"business": "Fintech", "rows": "10"})
+        r = client.post("/download", data={"rows": "3000", "format": "json", "seed": "1"})
+        assert r.status_code == 200
+        rows = json.loads(r.text)
+        assert len(rows) == 3000
+
+
+# --------------------------------------------------------------------------- #
+# Scenario B — describe your own dataset (custom prompt)
+# --------------------------------------------------------------------------- #
+class TestDescribeCustom:
+    def test_custom_prompt_drives_schema(self, client):
+        app = client.app
+        _override(app, bedrock=bedrock_schema_stub(schema_fields=[
+            {"name": "marker_field", "type": "string", "faker": "word"}]))
+        r = client.post("/preview", data={
+            "prompt": "a marketplace with sellers, listings, and gross merchandise value",
+            "business": "B2B SaaS",  # pill default also submitted; prompt must win
+            "rows": "200",
+        })
+        assert r.status_code == 200
+        assert "marker_field" in r.text
+
+
+# --------------------------------------------------------------------------- #
+# Scenario C — match a real (PII-bearing) document, output stays clean
+# --------------------------------------------------------------------------- #
+class TestMatchDocument:
+    def test_upload_audits_pii_and_output_has_no_real_values(self, client, customer_pdf):
         app = client.app
         _override(
             app,
-            bedrock=bedrock_schema_stub(
-                schema_fields=[
-                    {"name": "full_name", "type": "string", "faker": "name", "pii": True},
-                    {"name": "ssn", "type": "string", "faker": "ssn", "pii": True},
-                    {"name": "state", "type": "string", "enum": ["CA", "NY"]},
-                ]
-            ),
+            bedrock=bedrock_schema_stub(schema_fields=[
+                {"name": "full_name", "type": "string", "faker": "name", "pii": True},
+                {"name": "ssn", "type": "string", "faker": "ssn", "pii": True},
+                {"name": "state", "type": "string", "enum": ["CA", "NY"]},
+            ]),
             comprehend=comprehend_stub(entities_per_call=[[{"Type": "NAME"}, {"Type": "SSN"}]]),
         )
-        # Customer uploads the real document as the generation seed.
         with open(customer_pdf, "rb") as fh:
             r = client.post(
                 "/preview",
                 files={"seed_document": ("customer_intake.pdf", fh, "application/pdf")},
-                data={"rows": "10"},
+                data={"rows": "300"},
             )
         assert r.status_code == 200
-        # The preview pane reports the PII audit ran...
         assert "pii" in r.text.lower()
-        # ...and none of the real customer values appear in the rendered 10-row preview.
         for real in CUSTOMER_PII_VALUES:
             assert real not in r.text, f"real PII leaked into UI preview: {real!r}"
 
@@ -107,80 +168,23 @@ class TestScenario1UICustomerDataSeeded:
         app = client.app
         _override(
             app,
-            bedrock=bedrock_schema_stub(
-                schema_fields=[
-                    {"name": "full_name", "type": "string", "faker": "name", "pii": True},
-                    {"name": "state", "type": "string", "enum": ["CA", "NY"]},
-                ]
-            ),
+            bedrock=bedrock_schema_stub(schema_fields=[
+                {"name": "full_name", "type": "string", "faker": "name", "pii": True},
+                {"name": "state", "type": "string", "enum": ["CA", "NY"]},
+            ]),
             comprehend=comprehend_stub(entities_per_call=[[{"Type": "NAME"}]]),
         )
         with open(customer_pdf, "rb") as fh:
             client.post(
                 "/preview",
                 files={"seed_document": ("customer_intake.pdf", fh, "application/pdf")},
-                data={"rows": "10"},
+                data={"rows": "1000"},
             )
-        # Reuse the previewed schema (session) to download the full set — no second model call.
-        r = client.post("/download", data={"rows": "300", "format": "csv", "seed": "42"})
+        r = client.post("/download", data={"rows": "1000", "format": "csv", "seed": "42"})
         assert r.status_code == 200
         assert r.headers["content-type"].startswith("text/csv")
-        body = r.text
         for real in CUSTOMER_PII_VALUES:
-            assert real not in body
-
-
-# --------------------------------------------------------------------------- #
-# Scenario 2 — SA seeds the UI from public data
-# --------------------------------------------------------------------------- #
-class TestScenario2UIPublicDataSeeded:
-    def test_public_seed_preview_then_download(self, client, public_pdf):
-        app = client.app
-        _override(
-            app,
-            bedrock=bedrock_schema_stub(
-                schema_fields=[
-                    {"name": "sku", "type": "string", "regex": "SKU-[0-9]{3}"},
-                    {"name": "category", "type": "string", "enum": ["Widget", "Gadget"]},
-                ]
-            ),
-            comprehend=comprehend_stub(entities_per_call=[[]]),
-        )
-        with open(public_pdf, "rb") as fh:
-            r = client.post(
-                "/preview",
-                files={"seed_document": ("public_catalog.pdf", fh, "application/pdf")},
-                data={"rows": "10"},
-            )
-        assert r.status_code == 200
-        r2 = client.post("/download", data={"rows": "1000", "format": "json", "seed": "5"})
-        assert r2.status_code == 200
-        rows = json.loads(r2.text)
-        assert len(rows) == 1000
-
-    def test_preset_preview_is_offline(self, client):
-        """Preset path must not require any injected AWS client."""
-        presets = client.get("/presets")
-        assert presets.status_code == 200
-        # No bedrock/comprehend override registered → must still work.
-        r = client.post("/preview", data={"preset": "b2b_saas", "rows": "10"})
-        assert r.status_code == 200
-        assert "no data" not in r.text.lower()
-
-    def test_prompt_takes_precedence_over_submitted_preset(self, client):
-        """A browser <select> always submits a preset value; an explicit prompt
-        must still win so the paid 'describe' path is reachable."""
-        app = client.app
-        _override(app, bedrock=bedrock_schema_stub(
-            schema_fields=[{"name": "marker_field", "type": "string", "faker": "word"}]))
-        r = client.post("/preview", data={
-            "preset": "b2b_saas",  # browser sends this even when unwanted
-            "prompt": "a marketplace with sellers",
-            "rows": "10",
-        })
-        assert r.status_code == 200
-        # The prompt-inferred schema (marker_field) is used, not the b2b preset.
-        assert "marker_field" in r.text
+            assert real not in r.text
 
 
 # --------------------------------------------------------------------------- #
