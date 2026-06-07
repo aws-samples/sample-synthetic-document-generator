@@ -58,6 +58,19 @@ class TestValidation:
         _write_csv(p, ["age"], [{"age": ""}])
         assert run_validation(ValidateConfig(rows_path=str(p), schema=s))["valid"] is True
 
+    def test_integer_enum_membership_via_coercion(self, tmp_path):
+        # Regression: enum members must be compared after type coercion, so a
+        # CSV "2" validates against an integer enum [1,2,3] (the model emits
+        # string enum members per the toolspec).
+        s = _schema([{"name": "tier", "type": "integer", "enum": ["1", "2", "3"]}])
+        p = tmp_path / "rows.csv"
+        _write_csv(p, ["tier"], [{"tier": "2"}, {"tier": "3"}])
+        res = run_validation(ValidateConfig(rows_path=str(p), schema=s))
+        assert res["valid"] is True, res["violations"]
+        # And an out-of-set integer is still caught.
+        _write_csv(p, ["tier"], [{"tier": "9"}])
+        assert run_validation(ValidateConfig(rows_path=str(p), schema=s))["valid"] is False
+
 
 class TestRoundTrip:
     """The pipeline keystone: generate -> test is always valid, every type, both formats."""

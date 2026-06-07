@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from pocsynth import schema as schema_mod
-from pocsynth.bedrock import MODELS, make_session, translate_aws_error
+from pocsynth.bedrock import MODELS, make_session, read_tool_use, translate_aws_error
 from pocsynth.errors import SchemaError
 from pocsynth.prompts import build_schema_from_prompt_prompt, build_schema_infer_prompt
 from pocsynth.schema import (
@@ -65,17 +65,14 @@ class SchemaConfig:
 
 
 def _read_tooluse(response: dict, tool_name: str) -> dict:
-    content = response.get("output", {}).get("message", {}).get("content", []) or []
-    for block in content:
-        if isinstance(block, dict) and "toolUse" in block:
-            tu = block["toolUse"]
-            if tu.get("name") == tool_name:
-                return tu.get("input", {}) or {}
-    raise SchemaError(
-        f"model did not call the {tool_name!r} tool",
-        context={"stop_reason": response.get("stopReason")},
-        hint="Retry; if persistent, the model/region may not support tool use",
-    )
+    payload = read_tool_use(response, tool_name)
+    if payload is None:
+        raise SchemaError(
+            f"model did not call the {tool_name!r} tool",
+            context={"stop_reason": response.get("stopReason")},
+            hint="Retry; if persistent, the model/region may not support tool use",
+        )
+    return payload
 
 
 def _converse_for_schema(cfg: SchemaConfig, prompt: str) -> tuple[dict, dict]:
@@ -133,23 +130,18 @@ def _resolve_distribution(
         counts = counts_by_field.get(name)
         if mode == "uniform":
             f.pop("weights", None)
-            per_field[name] = "uniform"
-        elif mode == "infer":
-            if counts:
-                f["weights"] = weights_from_counts(counts)
-                per_field[name] = "infer"
-            else:
-                per_field[name] = "synthetic" if f.get("weights") else "uniform"
+            source = "uniform"
         elif mode == "synthetic":
-            per_field[name] = "synthetic" if f.get("weights") else "uniform"
-        else:  # auto
+            # Keep the model's invented weights, if any.
+            source = "synthetic" if f.get("weights") else "uniform"
+        else:  # infer or auto: prefer exact counts, else fall back to synthetic
             if counts:
                 f["weights"] = weights_from_counts(counts)
-                per_field[name] = "infer"
+                source = "infer"
             else:
-                per_field[name] = "synthetic" if f.get("weights") else "uniform"
-        if name in per_field:
-            f["weights_source"] = per_field[name]
+                source = "synthetic" if f.get("weights") else "uniform"
+        f["weights_source"] = source
+        per_field[name] = source
     return per_field
 
 

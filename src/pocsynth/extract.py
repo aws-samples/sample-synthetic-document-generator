@@ -20,7 +20,7 @@ from typing import Any
 
 import fitz  # PyMuPDF
 
-from pocsynth.bedrock import MODELS, make_session, translate_aws_error
+from pocsynth.bedrock import MODELS, make_session, read_tool_use, translate_aws_error
 from pocsynth.comprehend import scan_for_pii
 from pocsynth.errors import InputNotPdfError, PartialError
 from pocsynth.pdf import get_pdf_file
@@ -48,16 +48,6 @@ class ExtractConfig:
     output_dir: str | None = None
     bedrock_client: Any = field(default=None, repr=False)
     comprehend_client: Any = field(default=None, repr=False)
-
-
-def _read_tooluse(response: dict, tool_name: str) -> dict | None:
-    content = response.get("output", {}).get("message", {}).get("content", []) or []
-    for block in content:
-        if isinstance(block, dict) and "toolUse" in block:
-            tu = block["toolUse"]
-            if tu.get("name") == tool_name:
-                return tu.get("input", {}) or {}
-    return None
 
 
 def _pii_fields(records: list[dict], comprehend) -> set[str]:
@@ -177,7 +167,7 @@ def run_extraction(cfg: ExtractConfig, on_event: EventCallback = None) -> dict[s
             total_input_tokens += int(usage.get("inputTokens", 0) or 0)
             total_output_tokens += int(usage.get("outputTokens", 0) or 0)
 
-            payload = _read_tooluse(response, tool_name)
+            payload = read_tool_use(response, tool_name)
             if payload is None:
                 page_failures.append({"page": page_num + 1, "error": "NO_TOOL_USE",
                                       "message": f"no {tool_name} toolUse block"})
@@ -211,9 +201,11 @@ def run_extraction(cfg: ExtractConfig, on_event: EventCallback = None) -> dict[s
         merged = merge_observations(discovery_pages)
         records = merged
         # For PII flagging in discovery, synthesize pseudo-records from the
-        # observed distinct values so each field's values get scanned.
+        # observed distinct values. Separate distinct values with newlines (not
+        # spaces) so multi-word values like "John Smith" aren't run together
+        # with the next value into a spurious span.
         scan_records = [
-            {f["name"]: " ".join(map(str, f.get("value_counts", {}).keys()))}
+            {f["name"]: "\n".join(map(str, f.get("value_counts", {}).keys()))}
             for f in merged
         ]
 

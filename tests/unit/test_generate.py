@@ -68,6 +68,21 @@ class TestConstraints:
         with pytest.raises(SchemaError):
             run_generation(GenerateConfig(schema=s, rows=1, output_dir=str(tmp_path)))
 
+    def test_regex_grouped_alternation(self, tmp_path):
+        # Regression: grouped alternation must be resolved, not emitted literally.
+        s = _schema([{"name": "code", "type": "string", "regex": "(cat|dog)-[0-9]{3}"}])
+        res = run_generation(GenerateConfig(schema=s, rows=20, seed=4, output_dir=str(tmp_path)))
+        for row in _read_csv(res["output"]["rows_path"]):
+            assert re.fullmatch("(cat|dog)-[0-9]{3}", row["code"]), row["code"]
+
+    def test_regex_literal_brace_does_not_crash(self, tmp_path):
+        # Regression: a literal '{' / unterminated class must not raise ValueError.
+        s = _schema([{"name": "a", "type": "string", "regex": "v[0-9]{1}-{beta}"},
+                     {"name": "b", "type": "string", "regex": "[abc"}])
+        res = run_generation(GenerateConfig(schema=s, rows=5, seed=1, output_dir=str(tmp_path)))
+        rows = _read_csv(res["output"]["rows_path"])
+        assert len(rows) == 5  # produced rows rather than crashing
+
 
 class TestJson:
     def test_json_native_scalars(self, tmp_path):

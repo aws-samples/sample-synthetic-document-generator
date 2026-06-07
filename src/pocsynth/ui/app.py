@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import fitz
-from fastapi import Depends, FastAPI, Form, Request, UploadFile
+from fastapi import FastAPI, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from pocsynth import presets as presets_mod
@@ -35,6 +35,12 @@ _SCHEMA_STORE: dict[str, dict[str, Any]] = {}
 
 # --------------------------------------------------------------------------- #
 # Injected clients (overridden in tests; built from the AWS session otherwise)
+#
+# These return the client DIRECTLY so tests can override them with a stub via
+# `app.dependency_overrides[get_bedrock_client] = lambda: stub`. To keep the
+# free preset path from ever touching AWS, the handler resolves them lazily —
+# see `_lazy` below — so a missing AWS region/credentials only errors on the
+# paid branches that actually need a client.
 # --------------------------------------------------------------------------- #
 def get_bedrock_client():
     from pocsynth.bedrock import make_session
@@ -91,7 +97,8 @@ def create_app() -> FastAPI:
 
     @app.get("/presets", response_class=HTMLResponse)
     def list_presets_endpoint() -> str:
-        opts = "".join(
+        opts = '<option value="">— none (use prompt or upload below) —</option>'
+        opts += "".join(
             f'<option value="{_html_escape(p["name"])}">{_html_escape(p["description"])}</option>'
             for p in presets_mod.list_presets()
         )
@@ -104,23 +111,25 @@ def create_app() -> FastAPI:
         preset: str | None = Form(None),
         prompt: str | None = Form(None),
         seed_document: UploadFile | None = None,
-        bedrock=Depends(get_bedrock_client),
-        comprehend=Depends(get_comprehend_client),
     ) -> HTMLResponse:
         cost: float | None = None
         pii_note: str | None = None
 
+        # Lazy client resolution: only the paid branches build/inject a client,
+        # so the free preset path never touches AWS. Honors test overrides.
+        def _client(dep):
+            override = request.app.dependency_overrides.get(dep)
+            return (override or dep)()
+
+        # An empty string from the form's default <option> counts as "unset".
+        preset = preset or None
+        prompt = (prompt or "").strip() or None
+
         with tempfile.TemporaryDirectory() as td:
             tdp = Path(td)
-            if preset:
-                schema = presets_mod.load_preset(preset)
-            elif prompt:
-                res = run_schema(SchemaConfig(prompt=prompt, output_dir=str(tdp),
-                                              bedrock_client=bedrock))
-                schema = json.loads(Path(res["output"]["schema_path"]).read_text())
-                usage = res["output"].get("bedrock_usage", {})
-                cost = _rough_cost(usage)
-            elif seed_document is not None:
+            if seed_document is not None and seed_document.filename:
+                bedrock = _client(get_bedrock_client)
+                comprehend = _client(get_comprehend_client)
                 # Read PDF text locally, audit for PII, infer a schema from a sample.
                 pdf_bytes = seed_document.file.read()
                 text = _pdf_text(pdf_bytes)
@@ -148,6 +157,14 @@ def create_app() -> FastAPI:
                                               output_dir=str(tdp), bedrock_client=bedrock))
                 schema = json.loads(Path(res["output"]["schema_path"]).read_text())
                 cost = _rough_cost(res["output"].get("bedrock_usage", {}))
+            elif prompt:
+                bedrock = _client(get_bedrock_client)
+                res = run_schema(SchemaConfig(prompt=prompt, output_dir=str(tdp),
+                                              bedrock_client=bedrock))
+                schema = json.loads(Path(res["output"]["schema_path"]).read_text())
+                cost = _rough_cost(res["output"].get("bedrock_usage", {}))
+            elif preset:
+                schema = presets_mod.load_preset(preset)
             else:
                 return HTMLResponse(
                     '<div id="preview"><p>No data — choose a preset, describe a '

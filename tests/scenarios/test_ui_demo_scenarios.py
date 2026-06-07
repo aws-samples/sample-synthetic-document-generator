@@ -33,6 +33,7 @@ pytestmark = pytest.mark.skipif(not UI_AVAILABLE, reason=UI_SKIP_REASON)
 
 if UI_AVAILABLE:
     from fastapi.testclient import TestClient
+
     from pocsynth.ui.app import create_app, get_bedrock_client, get_comprehend_client
 
 
@@ -165,6 +166,21 @@ class TestScenario2UIPublicDataSeeded:
         r = client.post("/preview", data={"preset": "b2b_saas", "rows": "10"})
         assert r.status_code == 200
         assert "no data" not in r.text.lower()
+
+    def test_prompt_takes_precedence_over_submitted_preset(self, client):
+        """A browser <select> always submits a preset value; an explicit prompt
+        must still win so the paid 'describe' path is reachable."""
+        app = client.app
+        _override(app, bedrock=bedrock_schema_stub(
+            schema_fields=[{"name": "marker_field", "type": "string", "faker": "word"}]))
+        r = client.post("/preview", data={
+            "preset": "b2b_saas",  # browser sends this even when unwanted
+            "prompt": "a marketplace with sellers",
+            "rows": "10",
+        })
+        assert r.status_code == 200
+        # The prompt-inferred schema (marker_field) is used, not the b2b preset.
+        assert "marker_field" in r.text
 
 
 # --------------------------------------------------------------------------- #

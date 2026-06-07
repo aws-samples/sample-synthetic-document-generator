@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -45,9 +47,41 @@ _RX_CLASS = {
 _RX_ANY = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 
+def _resolve_groups(pattern: str, rng) -> str:
+    """Resolve `(a|b|c)` and `(?:a|b)` groups by picking one alternative.
+
+    Handles one level of (possibly alternating) groups — enough for the ID-style
+    patterns schemas use. Nested groups are resolved outer-first by repeated
+    passes. Unbalanced parens are left as literals (the caller tolerates them).
+    """
+    for _ in range(8):  # bounded passes; avoids pathological nesting loops
+        start = pattern.find("(")
+        if start == -1:
+            break
+        depth = 0
+        end = -1
+        for k in range(start, len(pattern)):
+            if pattern[k] == "(":
+                depth += 1
+            elif pattern[k] == ")":
+                depth -= 1
+                if depth == 0:
+                    end = k
+                    break
+        if end == -1:
+            break  # unbalanced; leave the rest alone
+        inner = pattern[start + 1:end]
+        if inner.startswith("?:"):
+            inner = inner[2:]
+        choice = rng.choice(inner.split("|")) if "|" in inner else inner
+        pattern = pattern[:start] + choice + pattern[end + 1:]
+    return pattern
+
+
 def _regexify(pattern: str, rng) -> str:
-    # Top-level alternation: pick one branch (no nested groups supported).
-    if "|" in pattern and "(" not in pattern:
+    # Resolve groups first, then top-level alternation.
+    pattern = _resolve_groups(pattern, rng)
+    if "|" in pattern:
         pattern = rng.choice(pattern.split("|"))
 
     out: list[str] = []
@@ -60,7 +94,9 @@ def _regexify(pattern: str, rng) -> str:
             nxt = pattern[j + 1]
             return _RX_CLASS.get(nxt, nxt), j + 2
         if ch == "[":
-            k = pattern.index("]", j + 1)
+            k = pattern.find("]", j + 1)
+            if k == -1:  # unterminated class → treat '[' as a literal
+                return ch, j + 1
             body = pattern[j + 1:k]
             neg = body.startswith("^")
             if neg:
@@ -95,8 +131,14 @@ def _regexify(pattern: str, rng) -> str:
         if j < n and pattern[j] in "{?+*":
             q = pattern[j]
             if q == "{":
-                k = pattern.index("}", j)
-                spec = pattern[j + 1:k]
+                k = pattern.find("}", j)
+                spec = pattern[j + 1:k] if k != -1 else ""
+                # A literal '{' (no closing '}' or non-numeric spec) is treated
+                # as a literal brace, not a quantifier.
+                if k == -1 or not re.fullmatch(r"\d*,?\d*", spec) or spec in ("", ","):
+                    out.append("{")
+                    i = j + 1
+                    continue
                 if "," in spec:
                     lo, hi = spec.split(",")
                     lo = int(lo) if lo else 0
@@ -133,8 +175,14 @@ class GenerateConfig:
     output_dir: str | None = None
 
 
-def valid_faker_providers(locale: str = "en_US") -> set[str]:
-    """Names callable on a Faker instance (public, no-arg-friendly)."""
+@lru_cache(maxsize=8)
+def valid_faker_providers(locale: str = "en_US") -> frozenset[str]:
+    """Names callable on a Faker instance (public, no-arg-friendly).
+
+    The provider set is constant per locale, so memoize it — this is called
+    once per generate run and once per `schema` lint, and the dir()-scan is
+    otherwise pure repeated work.
+    """
     fake = Faker(locale)
     names: set[str] = set()
     for attr in dir(fake):
@@ -145,7 +193,7 @@ def valid_faker_providers(locale: str = "en_US") -> set[str]:
                 names.add(attr)
         except (AttributeError, TypeError):
             continue
-    return names
+    return frozenset(names)
 
 
 def _enum_generator(fake: Faker, values: list, weights: dict | None) -> Callable[[], Any]:

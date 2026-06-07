@@ -111,6 +111,22 @@ def translate_aws_error(exc: Exception, *, service: str) -> DocSynthError:
     return wrapped_cls(str(exc), context={"exception": type(exc).__name__})
 
 
+def read_tool_use(response: dict, tool_name: str) -> dict | None:
+    """Return the `input` of the first `toolUse` block matching `tool_name`.
+
+    Shared by the forced-toolConfig paid stages (extract, schema). Returns None
+    when no matching toolUse block is present (e.g. a guardrail intervention or
+    an empty page) so callers can route that as a per-page failure.
+    """
+    content = response.get("output", {}).get("message", {}).get("content", []) or []
+    for block in content:
+        if isinstance(block, dict) and "toolUse" in block:
+            tu = block["toolUse"]
+            if tu.get("name") == tool_name:
+                return tu.get("input", {}) or {}
+    return None
+
+
 def process_page(
     bedrock_client,
     model_id: str,

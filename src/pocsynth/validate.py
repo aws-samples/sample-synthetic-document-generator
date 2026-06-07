@@ -66,6 +66,17 @@ def run_validation(cfg: ValidateConfig, on_event: EventCallback = None) -> dict[
         by_field[field] = by_field.get(field, 0) + 1
         by_rule[rule] = by_rule.get(rule, 0) + 1
 
+    # Pre-coerce each field's enum members to the field type so membership is
+    # compared like-for-like (a CSV "1" and a JSON 1 both match an integer enum).
+    enum_sets: dict[str, set] = {}
+    for field in fields:
+        if "enum" in field:
+            coerced_members = set()
+            for member in field["enum"]:
+                ok, cm = schema_mod.coerce_and_check(member, field["type"])
+                coerced_members.add(cm if ok else member)
+            enum_sets[field["name"]] = coerced_members
+
     emit("validation_started", rows=len(rows), fields=len(fields))
     for idx, row in enumerate(rows):
         for field in fields:
@@ -78,7 +89,7 @@ def run_validation(cfg: ValidateConfig, on_event: EventCallback = None) -> dict[
                 continue
             if coerced is None:
                 continue  # null is allowed (nullable v1)
-            if "enum" in field and coerced not in field["enum"]:
+            if name in enum_sets and coerced not in enum_sets[name]:
                 record(idx, name, "enum", field["enum"], coerced)
             if "regex" in field and not re.fullmatch(field["regex"], str(coerced)):
                 record(idx, name, "regex", field["regex"], coerced)

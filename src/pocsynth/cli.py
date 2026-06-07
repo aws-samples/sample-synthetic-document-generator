@@ -202,9 +202,17 @@ def _emit_human(command: str, obj: dict[str, Any]) -> None:
                 f"+ Comprehend ${(cost.get('comprehend') or {}).get('cost_usd', 0):.4f})"
             )
     elif command == "estimate":
-        _stderr.print(
-            f"  pages: {result.get('pages')}  model: [bold]{result.get('bedrock', {}).get('model')}[/]"
-        )
+        target = result.get("target", "convert")
+        if "pages" in result:
+            _stderr.print(
+                f"  target: {target}  pages: {result.get('pages')}  "
+                f"model: [bold]{result.get('bedrock', {}).get('model')}[/]"
+            )
+        else:
+            _stderr.print(
+                f"  target: [bold]{target}[/]  model: "
+                f"[bold]{result.get('bedrock', {}).get('model')}[/]"
+            )
         bedrock = result.get("bedrock", {})
         comp = result.get("comprehend") or {}
         _stderr.print(
@@ -249,9 +257,9 @@ def _emit_human(command: str, obj: dict[str, Any]) -> None:
         cost = result.get("cost")
         if cost:
             _stderr.print(f"  cost: [bold]${cost.get('total_cost_usd', 0):.4f}[/]")
-    elif command == "presets":
-        for p in result.get("presets", []):
-            _stderr.print(f"  [bold]{p['name']}[/] — {p['description']}")
+    # NOTE: `presets` prints its own Rich table in the command body before
+    # _wrap, so there is intentionally no presets branch here (avoids a
+    # double render).
     if not _STDOUT_IS_TTY and not _FORCE_QUIET_STDOUT:
         emit(obj, json_mode=True)
 
