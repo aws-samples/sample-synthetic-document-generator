@@ -57,6 +57,11 @@ dev = [
   "pytest>=9.0.3,<10",
   "ruff>=0.6",
   "stickytape>=0.2.1",
+  # For exercising the optional [ui] extra in tests (FastAPI TestClient needs httpx).
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
+  "python-multipart>=0.0.9,<1",
+  "httpx>=0.27,<1",
 ]
 pyinstaller = [
   "pyinstaller>=6.0,<7",

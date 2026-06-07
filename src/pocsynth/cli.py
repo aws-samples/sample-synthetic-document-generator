@@ -591,6 +591,31 @@ def version(ctx: typer.Context) -> None:
     _wrap(ctx, "version", lambda: {"version": __version__})
 
 
+# ---------- ui (optional [ui] extra) ----------
+
+
+@app.command()
+def ui(
+    ctx: typer.Context,
+    host: Annotated[str, typer.Option("--host")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port")] = 8000,
+) -> None:
+    """Launch the demo web UI (requires `pip install 'pocsynth[ui]'`)."""
+    try:
+        import uvicorn  # noqa: F401
+
+        from pocsynth.ui.app import app as ui_app  # noqa: F401
+    except ModuleNotFoundError as exc:
+        raise SchemaError(
+            "the demo UI requires the optional [ui] extra",
+            context={"missing": exc.name},
+            hint="pip install 'pocsynth[ui]'",
+        ) from exc
+    _stderr.print(f"[green]pocsynth UI[/] → http://{host}:{port}")
+    import uvicorn
+    uvicorn.run("pocsynth.ui.app:app", host=host, port=port, log_level="warning")
+
+
 # ---------- generate (free, offline) ----------
 
 
