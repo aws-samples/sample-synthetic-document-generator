@@ -29,8 +29,10 @@ from pocsynth.comprehend import scan_for_pii
 from pocsynth.core import ConversionConfig, run_conversion
 from pocsynth.errors import (
     AuthError,
+    DataInvalidError,
     DocSynthError,
     InputError,
+    SchemaError,
 )
 from pocsynth.output import emit, emit_ndjson, envelope, error_envelope, ndjson_event
 from pocsynth.pricing import (
@@ -73,6 +75,30 @@ class FormatChoice(str, Enum):
 class ModeChoice(str, Enum):
     synthetic = "synthetic"
     real = "real"
+
+
+class DataFormatChoice(str, Enum):
+    csv = "csv"
+    json = "json"
+
+
+class ExtractFormatChoice(str, Enum):
+    json = "json"
+    csv = "csv"
+    jsonl = "jsonl"
+
+
+class DistributionChoice(str, Enum):
+    auto = "auto"
+    infer = "infer"
+    synthetic = "synthetic"
+    uniform = "uniform"
+
+
+class EstimateTargetChoice(str, Enum):
+    convert = "convert"
+    extract = "extract"
+    schema = "schema"
 
 
 # ---------- global options (shared) ----------
@@ -552,6 +578,165 @@ def doctor(ctx: typer.Context) -> None:
 def version(ctx: typer.Context) -> None:
     """Print pocsynth version."""
     _wrap(ctx, "version", lambda: {"version": __version__})
+
+
+# ---------- generate (free, offline) ----------
+
+
+@app.command()
+def generate(
+    ctx: typer.Context,
+    schema: Annotated[str | None, typer.Option("--schema", help="Schema JSON path.")] = None,
+    preset: Annotated[str | None, typer.Option("--preset", help="Bundled preset name.")] = None,
+    rows: Annotated[int, typer.Option("--rows", help="Number of rows to generate.")] = 100,
+    fmt: Annotated[DataFormatChoice, typer.Option("--format", "-f")] = DataFormatChoice.csv,
+    seed: Annotated[int | None, typer.Option("--seed", help="Deterministic seed.")] = None,
+    locale: Annotated[str, typer.Option("--locale")] = "en_US",
+    output_dir: Annotated[str | None, typer.Option("--output-dir", "-o")] = None,
+) -> None:
+    """Generate synthetic rows from a schema or preset (offline, free)."""
+    from pocsynth import presets as presets_mod
+    from pocsynth.generate import GenerateConfig, run_generation
+    from pocsynth.schema import load_schema
+
+    stream = ctx.obj.get("stream", False)
+    json_mode = ctx.obj.get("json_mode", False)
+
+    def _go() -> dict[str, Any]:
+        if bool(schema) == bool(preset):
+            raise SchemaError(
+                "provide exactly one of --schema or --preset",
+                hint="e.g. --preset b2b_saas  OR  --schema my_schema.json",
+            )
+        schema_dict = presets_mod.load_preset(preset) if preset else load_schema(schema)
+
+        def on_event(name: str, **payload):
+            if stream and json_mode:
+                emit_ndjson(ndjson_event(name, "generate", **payload))
+
+        return run_generation(
+            GenerateConfig(
+                schema=schema_dict, rows=rows, export_format=fmt.value,
+                seed=seed, locale=locale, output_dir=output_dir,
+            ),
+            on_event=on_event,
+        )
+
+    _wrap(ctx, "generate", _go)
+
+
+# ---------- test (free, offline validation) ----------
+
+
+@app.command(name="test")
+def test_cmd(
+    ctx: typer.Context,
+    rows: Annotated[str, typer.Option("--rows", help="Path to generated rows (CSV/JSON).")],
+    schema: Annotated[str, typer.Option("--schema", help="Schema JSON path.")],
+    in_format: Annotated[
+        DataFormatChoice | None,
+        typer.Option("--in-format", help="Override format (else inferred from extension)."),
+    ] = None,
+) -> None:
+    """Validate generated rows against a schema (offline). Exit 7 if invalid."""
+    from pocsynth.schema import load_schema
+    from pocsynth.validate import ValidateConfig, run_validation
+
+    def _go() -> dict[str, Any]:
+        schema_dict = load_schema(schema)
+        result = run_validation(
+            ValidateConfig(
+                rows_path=rows, schema=schema_dict,
+                in_format=in_format.value if in_format else None,
+            )
+        )
+        if not result["valid"]:
+            raise DataInvalidError(
+                f"{len(result['violations'])} rows/fields violate the schema",
+                context={"report": result},
+                hint="Inspect result.context.report.violations",
+            )
+        return result
+
+    _wrap(ctx, "test", _go)
+
+
+# ---------- schema (lint mode here; infer/from-prompt added in Slice 2) ----------
+
+
+@app.command()
+def schema(
+    ctx: typer.Context,
+    from_schema: Annotated[
+        str | None, typer.Option("--from-schema", help="Lint/document an existing schema (offline).")
+    ] = None,
+    from_sample: Annotated[
+        str | None, typer.Option("--from-sample", help="Infer a schema from an extract sample (paid).")
+    ] = None,
+    from_prompt: Annotated[
+        str | None, typer.Option("--from-prompt", help="Infer a schema from a description (paid).")
+    ] = None,
+    model: Annotated[ModelChoice, typer.Option("--model")] = ModelChoice.sonnet,
+    fix: Annotated[bool, typer.Option("--fix", help="Apply autofixable lint issues.")] = False,
+    distribution: Annotated[
+        DistributionChoice, typer.Option("--distribution")
+    ] = DistributionChoice.auto,
+    max_tokens: Annotated[int, typer.Option("--max-tokens")] = DEFAULT_MAX_TOKENS,
+    output_dir: Annotated[str | None, typer.Option("--output-dir", "-o")] = None,
+) -> None:
+    """Generate, document, and lint a schema. Lint mode is offline; infer /
+    from-prompt call Bedrock."""
+    from pocsynth.schemagen import SchemaConfig, run_schema
+
+    sources = [s for s in (from_schema, from_sample, from_prompt) if s]
+    json_mode = ctx.obj.get("json_mode", False)
+    stream = ctx.obj.get("stream", False)
+
+    def _go() -> dict[str, Any]:
+        if len(sources) != 1:
+            raise SchemaError(
+                "provide exactly one of --from-schema / --from-sample / --from-prompt",
+            )
+
+        def on_event(name: str, **payload):
+            if stream and json_mode:
+                emit_ndjson(ndjson_event(name, "schema", **payload))
+
+        return run_schema(
+            SchemaConfig(
+                in_schema_path=from_schema, sample_path=from_sample, prompt=from_prompt,
+                model_key=model.value, fix=fix, distribution=distribution.value,
+                max_tokens=max_tokens, output_dir=output_dir,
+                region=ctx.obj.get("region"), profile=ctx.obj.get("profile"),
+            ),
+            on_event=on_event,
+        )
+
+    _wrap(ctx, "schema", _go)
+
+
+# ---------- presets (free, offline) ----------
+
+
+@app.command()
+def presets(ctx: typer.Context) -> None:
+    """List bundled preset schemas."""
+    from pocsynth import presets as presets_mod
+
+    json_mode = ctx.obj.get("json_mode", False)
+
+    def _go() -> dict[str, Any]:
+        return {"presets": presets_mod.list_presets()}
+
+    if not json_mode:
+        from pocsynth import presets as presets_mod
+        table = Table(title="Preset Schemas")
+        table.add_column("name")
+        table.add_column("description")
+        for p in presets_mod.list_presets():
+            table.add_row(p["name"], p["description"])
+        _stderr.print(table)
+    _wrap(ctx, "presets", _go)
 
 
 def main() -> None:  # pragma: no cover

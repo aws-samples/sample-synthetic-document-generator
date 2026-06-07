@@ -86,3 +86,28 @@ class PartialError(DocSynthError):
 class PricingDataError(DocSynthError):
     code = "PRICING_DATA_ERROR"
     exit_code = 2
+
+
+class SchemaError(DocSynthError):
+    """Invalid schema file, schema arguments, or unknown Faker provider."""
+
+    code = "SCHEMA_INVALID"
+    exit_code = 2
+
+
+class ExtractionError(DocSynthError):
+    """Structured extraction produced nothing usable."""
+
+    code = "EXTRACTION_FAILED"
+    exit_code = 5
+    retryable = True
+
+
+class DataInvalidError(DocSynthError):
+    """`test` found rows that violate the schema. The validation report is still
+    emitted in the envelope; this maps the failure to a distinct exit code so
+    CI / agents can gate on it.
+    """
+
+    code = "DATA_INVALID"
+    exit_code = 7

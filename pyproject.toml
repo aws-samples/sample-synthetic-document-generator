@@ -34,6 +34,16 @@ dependencies = [
   "charset-normalizer>=3.4,<4",
   "typer>=0.12,<1",
   "rich>=13,<15",
+  "faker>=37,<38",
+]
+
+[project.optional-dependencies]
+# Demo web UI only. NEVER imported by the CLI, the offline pipeline, or the
+# bundled `uv run --script` skill — install with `pip install 'pocsynth[ui]'`.
+ui = [
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
+  "python-multipart>=0.0.9,<1",
 ]
 
 [project.scripts]
@@ -57,6 +67,7 @@ packages = ["src/pocsynth"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/pocsynth/pricing.json" = "pocsynth/pricing.json"
+"src/pocsynth/presets" = "pocsynth/presets"
 
 [tool.ruff]
 line-length = 120

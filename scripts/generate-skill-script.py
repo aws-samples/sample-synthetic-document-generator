@@ -51,6 +51,7 @@ PEP723_HEADER = """\
 #     "charset-normalizer>=3.4,<4",
 #     "typer>=0.12,<1",
 #     "rich>=13,<15",
+#     "faker>=37,<38",
 # ]
 # ///
 """
@@ -67,7 +68,7 @@ def ensure_entry_module() -> None:
         "# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.\n"
         "# SPDX-License-Identifier: MIT-0\n"
         '"""Entry point for `python -m pocsynth` and the bundled skill script."""\n\n'
-        "from pocsynth.cli import app\n\n\n"
+        "from pocsynth.cli import app\n\n"
         'if __name__ == "__main__":\n'
         "    app()\n"
     )
@@ -136,6 +137,38 @@ def pricing_inline_block() -> str:
     )
 
 
+def presets_inline_block() -> str:
+    """Inline the bundled preset schema JSON files + patch pocsynth.presets to
+    serve them. Like pricing.json, importlib.resources can't find package data
+    in the flattened skill script, so embed each preset as a literal.
+    """
+    import json as _json
+
+    presets_dir = REPO_ROOT / "src" / "pocsynth" / "presets"
+    data = {
+        p.stem: _json.loads(p.read_text(encoding="utf-8"))
+        for p in sorted(presets_dir.glob("*.json"))
+    }
+    return (
+        "\n# ---- pocsynth bundled presets (inlined by generate-skill-script.py) ----\n"
+        "import json as _pocsynth_presets_json\n"
+        f"_POCSYNTH_BUNDLED_PRESETS = _pocsynth_presets_json.loads({_json.dumps(data)!r})\n"
+        "def _pocsynth_install_bundled_presets():\n"
+        "    from pocsynth import presets as _ps\n"
+        "    from pocsynth.schema import _validate_schema_shape as _v\n"
+        "    def _patched_load(name):\n"
+        "        if name not in _POCSYNTH_BUNDLED_PRESETS:\n"
+        "            from pocsynth.errors import SchemaError as _SE\n"
+        "            raise _SE(f'unknown preset: {name!r}', context={'preset': name})\n"
+        "        d = _POCSYNTH_BUNDLED_PRESETS[name]\n"
+        "        _v(d)\n"
+        "        return d\n"
+        "    _ps.load_preset = _patched_load\n"
+        "_pocsynth_install_bundled_presets()\n"
+        "# ---- end bundled presets ----\n"
+    )
+
+
 def main() -> None:
     ensure_entry_module()
 
@@ -168,7 +201,7 @@ def main() -> None:
     # line up. Re-indent every line by 4 spaces.
     patch = "".join(
         ("    " + ln if ln.strip() else ln)
-        for ln in pricing_inline_block().splitlines(keepends=True)
+        for ln in (pricing_inline_block() + presets_inline_block()).splitlines(keepends=True)
     )
     body = (
         "".join(body_lines[:entry_idx])
