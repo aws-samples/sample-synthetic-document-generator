@@ -117,20 +117,34 @@ def public_pdf(tmp_path: Path) -> Path:
 # AWS client stubs (no network)
 # --------------------------------------------------------------------------- #
 
-def bedrock_extract_stub(records: list[dict]) -> MagicMock:
+def bedrock_extract_stub(records: list[dict], *, mode: str = "discovery") -> MagicMock:
     """A Bedrock client whose `converse` returns a forced-toolUse extract payload.
 
-    Mirrors the ADR-0002 contract: the model is forced to a tool and we read
-    `output.message.content[].toolUse.input`.
+    Mirrors the ADR-0002 contract. In discovery mode it derives `observe_fields`
+    `value_counts` from the sample records; in conform mode it returns the
+    records under `extract_records`.
     """
+    if mode == "conform":
+        payload = {"records": records}
+        tool_name = "extract_records"
+    else:
+        counts: dict[str, dict] = {}
+        for rec in records:
+            for k, v in rec.items():
+                counts.setdefault(k, {})
+                counts[k][str(v)] = counts[k].get(str(v), 0) + 1
+        payload = {"fields": [
+            {"name": k, "type_hint": "string", "value_counts": vc}
+            for k, vc in counts.items()
+        ]}
+        tool_name = "observe_fields"
+
     client = MagicMock()
     client.converse.return_value = {
         "output": {
             "message": {
                 "role": "assistant",
-                "content": [
-                    {"toolUse": {"name": "observe_fields", "input": {"records": records}}}
-                ],
+                "content": [{"toolUse": {"name": tool_name, "input": payload}}],
             }
         },
         "usage": {"inputTokens": 120, "outputTokens": 40, "totalTokens": 160},
@@ -161,13 +175,31 @@ def bedrock_schema_stub(schema_fields: list[dict]) -> MagicMock:
     return client
 
 
-def comprehend_stub(entities_per_call: list[list[dict]]) -> MagicMock:
-    """A Comprehend client whose detect_pii_entities returns canned entities.
+def comprehend_stub(entities_per_call=None, *, pii_markers=None) -> MagicMock:
+    """A content-aware Comprehend client (no real network).
 
-    `entities_per_call` is consumed one list per call; a MagicMock side_effect
-    lets us flag specific fields as PII (Scenario 1).
+    `detect_pii_entities(Text=...)` returns a PII entity (with offsets/score the
+    audit CSV needs) whenever the scanned text contains any of `pii_markers`
+    (defaults to the known customer PII values). This is order-independent — it
+    works for both the whole-document audit scan and the per-field PII probes,
+    so a field carrying a real PII value gets flagged and a clean field does not.
+
+    `entities_per_call` is accepted for backwards-compatible call sites: a
+    non-empty first element means "this document contains PII" and falls back to
+    the default markers.
     """
+    markers = list(pii_markers) if pii_markers is not None else list(CUSTOMER_PII_VALUES)
+    if entities_per_call and not entities_per_call[0]:
+        # Caller explicitly modeled a clean document (e.g. public data).
+        markers = []
+
+    def _detect(Text: str = "", **_kw):
+        if any(m in Text for m in markers):
+            return {"Entities": [
+                {"Type": "OTHER", "Score": 0.99, "BeginOffset": 0, "EndOffset": 3}
+            ]}
+        return {"Entities": []}
+
     client = MagicMock()
-    responses = [{"Entities": ents} for ents in entities_per_call]
-    client.detect_pii_entities.side_effect = responses + [{"Entities": []}] * 20
+    client.detect_pii_entities.side_effect = _detect
     return client

@@ -40,6 +40,15 @@ MIN_OUTPUT_TOKENS_PER_PAGE = 150   # Even a near-empty page produces some HTML
 MAX_OUTPUT_TOKENS_PER_PAGE = 2000  # Saturates before the 8k maxTokens cap
 STALE_WARN_DAYS = 90                  # Warn on pricing snapshots older than this
 
+# Structured extraction emits compact tool-call JSON (field/value pairs), far
+# shorter than convert's rendered HTML/Markdown. Lower output ratio + ceiling.
+# NOTE: a first-pass guess pending live calibration (cf. the convert ratio).
+EXTRACT_OUTPUT_TOKENS_PER_INPUT_TOKEN_RATIO = 0.15
+EXTRACT_MAX_OUTPUT_TOKENS_PER_PAGE = 1200
+# schema-infer/from-prompt: one small call. A schema for a wide table rarely
+# exceeds a few hundred output tokens.
+SCHEMA_INFER_OUTPUT_TOKENS = 600
+
 
 def load_pricing(path: str | Path | None = None) -> dict[str, Any]:
     """Load the pricing snapshot.
@@ -405,3 +414,87 @@ def actual_convert_cost(
         "warnings": [],
     }
     return _finalize_envelope(envelope, pricing, age=age, region=region, noun="cost")
+
+
+def estimate_extract_cost(
+    pdf_path: str | Path,
+    model_key: str,
+    pricing: dict[str, Any],
+    *,
+    pages: int | None = None,
+    pii_audit: bool = True,
+    region: str | None = None,
+) -> dict[str, Any]:
+    """Pre-flight estimate for `extract` (ADR-0007).
+
+    Same per-page image+text input heuristic as convert, but a lower output
+    ratio (structured records are far shorter than rendered HTML/Markdown).
+    """
+    path = Path(pdf_path)
+    text_chars, pages_measured = _count_text_chars_from_pdf(path, max_pages=pages)
+    text_tokens = math.ceil(text_chars / DEFAULT_CHARS_PER_TOKEN) if text_chars else 0
+    image_tokens = pages_measured * DEFAULT_IMAGE_TOKENS_PER_PAGE
+    system_prompt_tokens = 200
+    total_input = text_tokens + image_tokens + system_prompt_tokens
+    total_output = _estimate_output_tokens(
+        text_tokens, pages_measured,
+        ratio=EXTRACT_OUTPUT_TOKENS_PER_INPUT_TOKEN_RATIO,
+        min_per_page=MIN_OUTPUT_TOKENS_PER_PAGE,
+        max_per_page=EXTRACT_MAX_OUTPUT_TOKENS_PER_PAGE,
+    )
+
+    bedrock = estimate_bedrock_cost(model_key, total_input, total_output, pricing, region=region)
+    comprehend: dict[str, Any] | None = None
+    if pii_audit:
+        pii_chars = pages_measured * DEFAULT_CHARS_PER_PAGE_FOR_PII
+        comprehend = estimate_comprehend_cost(pii_chars, pricing)
+    total = bedrock["total_cost_usd"] + (comprehend["cost_usd"] if comprehend else 0.0)
+    age = pricing_age_days(pricing)
+
+    envelope: dict[str, Any] = {
+        "target": "extract",
+        "pages": pages_measured,
+        "bedrock": bedrock,
+        "comprehend": comprehend,
+        "total_cost_usd": round(total, 6),
+        "pricing_retrieved": pricing["retrieved"],
+        "pricing_stale_days": age,
+        "pricing_source_note": pricing.get("source"),
+        "estimate": {"confidence": "low", "method": "heuristic"},
+        "warnings": [],
+    }
+    return _finalize_envelope(envelope, pricing, age=age, region=region, noun="estimate")
+
+
+def estimate_schema_infer_cost(
+    sample_path: str | Path,
+    model_key: str,
+    pricing: dict[str, Any],
+    *,
+    region: str | None = None,
+) -> dict[str, Any]:
+    """Pre-flight estimate for `schema --infer/--from-prompt` (ADR-0007).
+
+    Offline: token-count the sample file (or prompt text) for input; a small
+    fixed output budget for the emitted schema. Typically pennies.
+    """
+    p = Path(sample_path)
+    sample_chars = len(p.read_text(encoding="utf-8", errors="replace")) if p.exists() else 0
+    input_tokens = math.ceil(sample_chars / DEFAULT_CHARS_PER_TOKEN) + 300
+    output_tokens = SCHEMA_INFER_OUTPUT_TOKENS
+
+    bedrock = estimate_bedrock_cost(model_key, input_tokens, output_tokens, pricing, region=region)
+    age = pricing_age_days(pricing)
+    envelope: dict[str, Any] = {
+        "target": "schema",
+        "bedrock": bedrock,
+        "comprehend": None,
+        "total_cost_usd": bedrock["total_cost_usd"],
+        "pricing_retrieved": pricing["retrieved"],
+        "pricing_stale_days": age,
+        "pricing_source_note": pricing.get("source"),
+        "estimate": {"confidence": "low", "method": "heuristic",
+                     "note": "schema inference is typically pennies"},
+        "warnings": [],
+    }
+    return _finalize_envelope(envelope, pricing, age=age, region=region, noun="estimate")

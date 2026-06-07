@@ -37,6 +37,7 @@ from pocsynth.errors import (
 from pocsynth.output import emit, emit_ndjson, envelope, error_envelope, ndjson_event
 from pocsynth.pricing import (
     actual_convert_cost,
+    estimate_bedrock_cost,
     estimate_convert_cost,
     load_pricing,
 )
@@ -330,39 +331,49 @@ def convert(
 @app.command()
 def estimate(
     ctx: typer.Context,
-    pdf: Annotated[str, typer.Argument(help="PDF path; URLs are NOT fetched by estimate (offline).")],
+    target_path: Annotated[
+        str,
+        typer.Argument(
+            help="PDF path (convert/extract) or sample/schema path (--for schema). "
+                 "Offline; URLs are not fetched."
+        ),
+    ],
+    for_: Annotated[
+        EstimateTargetChoice, typer.Option("--for", help="Which paid command to estimate.")
+    ] = EstimateTargetChoice.convert,
     model: Annotated[ModelChoice, typer.Option("--model")] = ModelChoice.sonnet,
     pages: Annotated[int | None, typer.Option("--pages", help="Page cap.")] = None,
     pii_audit: Annotated[
         bool, typer.Option("--pii-audit/--no-pii-audit", help="Include PII audit in estimate.")
     ] = True,
 ) -> None:
-    """Pre-flight cost estimate for a PDF (offline, no AWS calls).
+    """Pre-flight cost estimate (offline, no AWS calls) for convert / extract / schema.
 
-    Heuristic-based: expect ±30-50% error. Use `convert`'s returned `cost` for
-    exact numbers after a run, or run `estimate --pages 1` then extrapolate.
+    Heuristic-based: expect ±30-50% error. Use the command's returned `cost` for
+    exact numbers after a run.
     """
+    from pocsynth.pricing import estimate_extract_cost, estimate_schema_infer_cost
 
     def _go() -> dict[str, Any]:
-        pdf_path = Path(pdf)
-        if not pdf_path.exists():
+        path = Path(target_path)
+        if not path.exists():
             raise InputError(
-                f"File not found: {pdf}",
-                context={"path": pdf},
-                hint="estimate runs offline; it cannot fetch URLs. Provide a local path.",
+                f"File not found: {target_path}",
+                context={"path": target_path},
+                hint="estimate runs offline; provide a local path.",
             )
         pricing = load_pricing()
         region, _src = resolve_region(ctx.obj.get("region"), ctx.obj.get("profile"))
-        result = estimate_convert_cost(
-            pdf_path,
-            model.value,
-            pricing,
-            pages=pages,
-            pii_audit=pii_audit,
-            region=region,
-        )
-        # Surface stale/region warnings on stderr so humans see them
-        # even in non-JSON mode.
+        if for_ is EstimateTargetChoice.extract:
+            result = estimate_extract_cost(
+                path, model.value, pricing, pages=pages, pii_audit=pii_audit, region=region
+            )
+        elif for_ is EstimateTargetChoice.schema:
+            result = estimate_schema_infer_cost(path, model.value, pricing, region=region)
+        else:
+            result = estimate_convert_cost(
+                path, model.value, pricing, pages=pages, pii_audit=pii_audit, region=region
+            )
         if result.get("warnings"):
             for w in result["warnings"]:
                 _stderr.print(f"[yellow]warning:[/] {w}")
@@ -702,7 +713,7 @@ def schema(
             if stream and json_mode:
                 emit_ndjson(ndjson_event(name, "schema", **payload))
 
-        return run_schema(
+        result = run_schema(
             SchemaConfig(
                 in_schema_path=from_schema, sample_path=from_sample, prompt=from_prompt,
                 model_key=model.value, fix=fix, distribution=distribution.value,
@@ -711,6 +722,22 @@ def schema(
             ),
             on_event=on_event,
         )
+        # Paid modes (infer/from-prompt) report bedrock_usage → price it.
+        usage = result.get("output", {}).get("bedrock_usage")
+        if usage:
+            try:
+                pricing = load_pricing()
+                region, _src = resolve_region(ctx.obj.get("region"), ctx.obj.get("profile"))
+                result["cost"] = estimate_bedrock_cost(
+                    model.value, usage["input_tokens"], usage["output_tokens"],
+                    pricing, region=region,
+                )
+            except DocSynthError as exc:
+                result["cost"] = None
+                result.setdefault("warnings", []).append(
+                    f"cost computation failed ({exc.code}): {exc.message}"
+                )
+        return result
 
     _wrap(ctx, "schema", _go)
 
@@ -737,6 +764,65 @@ def presets(ctx: typer.Context) -> None:
             table.add_row(p["name"], p["description"])
         _stderr.print(table)
     _wrap(ctx, "presets", _go)
+
+
+# ---------- extract (paid, Bedrock) ----------
+
+
+@app.command()
+def extract(
+    ctx: typer.Context,
+    pdf: Annotated[str, typer.Argument(help="PDF path or https:// URL.")],
+    schema: Annotated[
+        str | None,
+        typer.Option("--schema", help="Conform to this schema (else discovery mode)."),
+    ] = None,
+    model: Annotated[ModelChoice, typer.Option("--model")] = ModelChoice.sonnet,
+    fmt: Annotated[ExtractFormatChoice, typer.Option("--format", "-f")] = ExtractFormatChoice.json,
+    pages: Annotated[int | None, typer.Option("--pages", help="Max pages.")] = None,
+    max_tokens: Annotated[int, typer.Option("--max-tokens")] = DEFAULT_MAX_TOKENS,
+    pii_audit: Annotated[
+        bool, typer.Option("--pii-audit/--no-pii-audit", help="Audit extracted values for PII.")
+    ] = True,
+    output_dir: Annotated[str | None, typer.Option("--output-dir", "-o")] = None,
+) -> None:
+    """Extract structured records (conform) or field observations (discovery) from a PDF."""
+    from pocsynth.extract import ExtractConfig, run_extraction
+    from pocsynth.schema import load_schema
+
+    stream = ctx.obj.get("stream", False)
+    json_mode = ctx.obj.get("json_mode", False)
+
+    def _go() -> dict[str, Any]:
+        schema_dict = load_schema(schema) if schema else None
+
+        def on_event(name: str, **payload):
+            if stream and json_mode:
+                emit_ndjson(ndjson_event(name, "extract", **payload))
+
+        result = run_extraction(
+            ExtractConfig(
+                pdf_url=pdf, schema=schema_dict, model_key=model.value,
+                export_format=fmt.value, num_pages=pages, max_tokens=max_tokens,
+                pii_audit=pii_audit, region=ctx.obj.get("region"),
+                profile=ctx.obj.get("profile"), output_dir=output_dir,
+            ),
+            on_event=on_event,
+        )
+        try:
+            pricing = load_pricing()
+            region, _src = resolve_region(ctx.obj.get("region"), ctx.obj.get("profile"))
+            result["cost"] = actual_convert_cost(
+                result, pricing, model_key=model.value, region=region
+            )
+        except DocSynthError as exc:
+            result["cost"] = None
+            result.setdefault("warnings", []).append(
+                f"cost computation failed ({exc.code}): {exc.message}"
+            )
+        return result
+
+    _wrap(ctx, "extract", _go)
 
 
 def main() -> None:  # pragma: no cover

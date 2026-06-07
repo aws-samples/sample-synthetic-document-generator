@@ -32,12 +32,11 @@ from .conftest import (
 pytestmark = pytest.mark.skipif(not PIPELINE_AVAILABLE, reason=PIPELINE_SKIP_REASON)
 
 if PIPELINE_AVAILABLE:
+    from pocsynth import presets
     from pocsynth.extract import ExtractConfig, run_extraction
     from pocsynth.generate import GenerateConfig, run_generation
     from pocsynth.schemagen import SchemaConfig, run_schema
     from pocsynth.validate import ValidateConfig, run_validation
-
-    from pocsynth import presets
 
 
 def _read_csv(path: Path) -> list[dict]:
@@ -86,12 +85,15 @@ class TestScenario1CustomerDataSeeded:
         assert {"full_name", "ssn", "email", "mrn"} <= set(ext["pii_audit"]["pii_fields"])
 
         # 2) SCHEMA --infer (paid) — PII guard strips real-value enums.
+        # The model over-eagerly enumerated the real SSN values it saw — the
+        # PII guard must strip that enum and surface a suppression note.
         schema_bedrock = bedrock_schema_stub(
             schema_fields=[
-                {"name": "full_name", "type": "string", "faker": "name", "pii": True},
-                {"name": "ssn", "type": "string", "faker": "ssn", "pii": True},
-                {"name": "email", "type": "string", "faker": "email", "pii": True},
-                {"name": "mrn", "type": "string", "regex": "MRN-[0-9]{6}", "pii": True},
+                {"name": "full_name", "type": "string", "faker": "name"},
+                {"name": "ssn", "type": "string", "faker": "ssn",
+                 "enum": ["555-22-7788", "555-22-9001"], "weights": {"555-22-7788": 0.5, "555-22-9001": 0.5}},
+                {"name": "email", "type": "string", "faker": "email"},
+                {"name": "mrn", "type": "string", "regex": "MRN-[0-9]{6}"},
                 {"name": "state", "type": "string", "enum": ["CA", "NY"]},
                 {"name": "plan", "type": "string", "enum": ["Gold", "Silver"]},
             ]
@@ -182,7 +184,8 @@ class TestScenario2PublicDataSeeded:
                 {"name": "sku", "type": "string", "regex": "SKU-[0-9]{3}"},
                 {"name": "category", "type": "string", "enum": ["Widget", "Gadget"],
                  "weights": {"Widget": 0.66, "Gadget": 0.34}},
-                {"name": "price", "type": "number", "faker": "pricetag"},
+                {"name": "price", "type": "number", "faker": "pyfloat",
+                 "faker_args": {"min_value": 5, "max_value": 2000, "right_digits": 2}},
                 {"name": "region", "type": "string", "enum": ["US", "EU"]},
             ]
         )
@@ -236,7 +239,8 @@ class TestScenario3PromptSeeded:
                 {"name": "account_name", "type": "string", "faker": "company"},
                 {"name": "plan", "type": "string", "enum": ["Starter", "Pro", "Enterprise"],
                  "weights": {"Starter": 0.5, "Pro": 0.3, "Enterprise": 0.2}},
-                {"name": "mrr", "type": "number", "faker": "pricetag"},
+                {"name": "mrr", "type": "number", "faker": "pyfloat",
+                 "faker_args": {"min_value": 50, "max_value": 50000, "right_digits": 2}},
                 {"name": "signup_date", "type": "date", "faker": "date_this_year"},
             ]
         )
