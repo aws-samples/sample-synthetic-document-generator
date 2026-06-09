@@ -106,8 +106,11 @@ def _regexify(pattern: str, rng) -> str:
             m = 0
             while m < len(body):
                 if m + 2 < len(body) and body[m + 1] == "-":
-                    for c in range(ord(body[m]), ord(body[m + 2]) + 1):
-                        chars.append(chr(c))
+                    # Tolerate reversed ranges (e.g. [9-0]) by ordering the ends.
+                    lo_o, hi_o = ord(body[m]), ord(body[m + 2])
+                    if lo_o > hi_o:
+                        lo_o, hi_o = hi_o, lo_o
+                    chars.extend(chr(c) for c in range(lo_o, hi_o + 1))
                     m += 3
                 else:
                     chars.append(body[m])
@@ -115,7 +118,9 @@ def _regexify(pattern: str, rng) -> str:
             if neg:
                 allchars = set(_RX_ANY)
                 chars = sorted(allchars - set(chars)) or list(_RX_ANY)
-            return "".join(chars), k + 1
+            # A class that resolved to nothing (shouldn't happen now) falls back
+            # to the generic pool so generation never picks from an empty set.
+            return ("".join(chars) or _RX_ANY), k + 1
         if ch == ".":
             return _RX_ANY, j + 1
         # literal
@@ -141,9 +146,11 @@ def _regexify(pattern: str, rng) -> str:
                     i = j + 1
                     continue
                 if "," in spec:
-                    lo, hi = spec.split(",")
-                    lo = int(lo) if lo else 0
-                    hi = int(hi) if hi else lo + 4
+                    lo_s, hi_s = spec.split(",")
+                    lo = int(lo_s) if lo_s else 0
+                    hi = int(hi_s) if hi_s else lo + 4
+                    if lo > hi:  # tolerate reversed bounds e.g. x{5,2}
+                        lo, hi = hi, lo
                     count = rng.randint(lo, hi)
                 else:
                     count = int(spec)
@@ -160,8 +167,10 @@ def _regexify(pattern: str, rng) -> str:
         for _ in range(count):
             if is_literal and len(pool) == 1:
                 out.append(pool)
-            else:
+            elif pool:
                 out.append(rng.choice(pool))
+            # else: empty pool → emit nothing rather than crash (defensive;
+            # pool_at never returns "" now, but keep generation crash-proof).
         i = j
     return "".join(out)
 
@@ -178,22 +187,27 @@ class GenerateConfig:
 
 @lru_cache(maxsize=8)
 def valid_faker_providers(locale: str = "en_US") -> frozenset[str]:
-    """Names callable on a Faker instance (public, no-arg-friendly).
+    """Real Faker data-provider method names (constant per locale; memoized).
 
-    The provider set is constant per locale, so memoize it — this is called
-    once per generate run and once per `schema` lint, and the dir()-scan is
-    otherwise pure repeated work.
+    Scans the registered *provider classes* (`fake.get_providers()`), NOT the
+    proxy's `dir()`. The proxy exposes control methods — `format`, `parse`,
+    `seed`, `seed_instance`, `add_provider`, `get_providers`, … — which are
+    callable but are not data generators; admitting them would let a schema
+    bind a field to `format` (crashes at generation) or `seed_instance`
+    (silently re-seeds mid-run, breaking determinism). Provider classes expose
+    only the data methods, so this is the correct allowlist.
     """
     fake = Faker(locale)
     names: set[str] = set()
-    for attr in dir(fake):
-        if attr.startswith("_"):
-            continue
-        try:
-            if callable(getattr(fake, attr)):
-                names.add(attr)
-        except (AttributeError, TypeError):
-            continue
+    for provider in fake.get_providers():
+        for attr in dir(provider):
+            if attr.startswith("_"):
+                continue
+            try:
+                if callable(getattr(provider, attr)):
+                    names.add(attr)
+            except (AttributeError, TypeError):
+                continue
     return frozenset(names)
 
 

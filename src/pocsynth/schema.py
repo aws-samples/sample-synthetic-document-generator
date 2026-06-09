@@ -236,8 +236,22 @@ def merge_observations(per_page: list[dict], cap: int = MAX_EXAMPLES_PER_FIELD) 
                 name, {"name": name, "type_hint": field.get("type_hint", "string"),
                        "value_counts": {}}
             )
-            for value, count in (field.get("value_counts") or {}).items():
-                slot["value_counts"][value] = slot["value_counts"].get(value, 0) + int(count)
+            # value_counts is model-controlled; tolerate non-dict shapes and
+            # non-numeric counts so one malformed page can't abort the merge.
+            vc = field.get("value_counts")
+            if isinstance(vc, dict):
+                items = vc.items()
+            elif isinstance(vc, list):
+                items = [(v, 1) for v in vc]  # bare value list → count 1 each
+            else:
+                items = []
+            for value, count in items:
+                try:
+                    inc = int(count)
+                except (TypeError, ValueError):
+                    inc = 1  # non-numeric count → treat as a single observation
+                key = str(value)
+                slot["value_counts"][key] = slot["value_counts"].get(key, 0) + inc
     # Cap distinct values (keep the most frequent).
     for slot in merged.values():
         vc = slot["value_counts"]

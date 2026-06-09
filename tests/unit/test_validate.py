@@ -58,6 +58,17 @@ class TestValidation:
         _write_csv(p, ["age"], [{"age": ""}])
         assert run_validation(ValidateConfig(rows_path=str(p), schema=s))["valid"] is True
 
+    def test_uncompilable_regex_reported_not_raised(self, tmp_path):
+        # A schema regex that doesn't compile must be a field-level violation,
+        # not a crash, and must be reported once (not per row).
+        s = _schema([{"name": "code", "type": "string", "regex": "([unclosed"}])
+        p = tmp_path / "rows.csv"
+        _write_csv(p, ["code"], [{"code": "x"}, {"code": "y"}])
+        res = run_validation(ValidateConfig(rows_path=str(p), schema=s))
+        assert res["valid"] is False
+        regex_v = [v for v in res["violations"] if v["rule"] == "regex"]
+        assert len(regex_v) == 1  # reported once, not per row
+
     def test_integer_enum_membership_via_coercion(self, tmp_path):
         # Regression: enum members must be compared after type coercion, so a
         # CSV "2" validates against an integer enum [1,2,3] (the model emits

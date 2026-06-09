@@ -83,6 +83,25 @@ class TestConstraints:
         rows = _read_csv(res["output"]["rows_path"])
         assert len(rows) == 5  # produced rows rather than crashing
 
+    def test_regex_reversed_range_and_quantifier_do_not_crash(self, tmp_path):
+        # Regression: reversed char-range [9-0] and reversed quantifier {5,2}
+        # compile cleanly in stdlib re but used to crash _regexify.
+        s = _schema([{"name": "a", "type": "string", "regex": "[9-0]{4}"},
+                     {"name": "b", "type": "string", "regex": "x{5,2}"}])
+        res = run_generation(GenerateConfig(schema=s, rows=8, seed=3, output_dir=str(tmp_path)))
+        rows = _read_csv(res["output"]["rows_path"])
+        assert len(rows) == 8
+        for r in rows:
+            assert r["a"].isdigit() and len(r["a"]) == 4  # [9-0] ordered to 0-9
+
+    def test_non_data_faker_method_rejected(self, tmp_path):
+        # Regression: a proxy control method (format/seed_instance) must be
+        # rejected by provider validation, not silently dispatched.
+        for bad in ("format", "seed_instance", "add_provider"):
+            s = _schema([{"name": "x", "type": "string", "faker": bad}])
+            with pytest.raises(SchemaError):
+                run_generation(GenerateConfig(schema=s, rows=1, output_dir=str(tmp_path)))
+
 
 class TestJson:
     def test_json_native_scalars(self, tmp_path):

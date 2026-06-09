@@ -120,6 +120,27 @@ class TestPillCompose:
         rows = json.loads(r.text)
         assert len(rows) == 3000
 
+    def test_download_filename_is_header_safe(self, client):
+        # A model-generated schema name with a quote/CRLF must not corrupt or
+        # inject the content-disposition header — it's slugified.
+        app = client.app
+        bedrock = bedrock_schema_stub(schema_fields=[
+            {"name": "x", "type": "string", "faker": "word"}])
+        # Force a hostile schema name through the stub.
+        bedrock.converse.return_value["output"]["message"]["content"][0][
+            "toolUse"]["input"]["name"] = 'evil"\r\nSet-Cookie: x=1'
+        _override(app, bedrock=bedrock)
+        client.post("/preview", data={"business": "Retail", "rows": "10"})
+        r = client.post("/download", data={"rows": "5", "format": "csv"})
+        assert r.status_code == 200
+        cd = r.headers["content-disposition"]
+        # The CR/LF that would split the header is gone, and the quote that
+        # would break out of filename="..." was slugified — so the only two
+        # quotes are the wrapping pair. (Set-Cookie may survive as inert text.)
+        assert "\r" not in cd and "\n" not in cd
+        assert cd.count('"') == 2
+        assert cd.startswith('attachment; filename="') and cd.endswith('.csv"')
+
 
 # --------------------------------------------------------------------------- #
 # Scenario B — describe your own dataset (custom prompt)

@@ -77,6 +77,17 @@ def run_validation(cfg: ValidateConfig, on_event: EventCallback = None) -> dict[
                 coerced_members.add(cm if ok else member)
             enum_sets[field["name"]] = coerced_members
 
+    # Compile each field's regex ONCE (not per cell). A pattern that doesn't
+    # compile is reported as a single field-level violation rather than raising
+    # per row; this also avoids O(rows*fields) recompilation.
+    compiled_regex: dict[str, Any] = {}
+    for field in fields:
+        if "regex" in field:
+            try:
+                compiled_regex[field["name"]] = re.compile(field["regex"])
+            except re.error as exc:
+                record(0, field["name"], "regex", field["regex"], f"<uncompilable: {exc}>")
+
     emit("validation_started", rows=len(rows), fields=len(fields))
     for idx, row in enumerate(rows):
         for field in fields:
@@ -91,7 +102,8 @@ def run_validation(cfg: ValidateConfig, on_event: EventCallback = None) -> dict[
                 continue  # null is allowed (nullable v1)
             if name in enum_sets and coerced not in enum_sets[name]:
                 record(idx, name, "enum", field["enum"], coerced)
-            if "regex" in field and not re.fullmatch(field["regex"], str(coerced)):
+            pat = compiled_regex.get(name)
+            if pat is not None and not pat.fullmatch(str(coerced)):
                 record(idx, name, "regex", field["regex"], coerced)
 
     valid = not violations

@@ -16,6 +16,7 @@ Run: `pocsynth ui`  (or `uvicorn pocsynth.ui.app:app`).
 
 from __future__ import annotations
 
+import html
 import json
 import tempfile
 import uuid
@@ -27,8 +28,9 @@ from fastapi import FastAPI, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse, StreamingResponse
 
 from pocsynth.comprehend import scan_for_pii
-from pocsynth.generate import GenerateConfig, run_generation, stream_rows
-from pocsynth.schema import _validate_schema_shape, field_names
+from pocsynth.errors import SchemaError
+from pocsynth.generate import stream_rows
+from pocsynth.schema import field_names
 from pocsynth.schemagen import SchemaConfig, run_schema
 
 # In-memory schema store keyed by a session id.
@@ -90,7 +92,9 @@ def get_comprehend_client():
 
 
 def _html_escape(s: str) -> str:
-    return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+    # quote=True also escapes " and ', so this is safe in attribute contexts
+    # (title="…", option value="…"), not just element text.
+    return html.escape(str(s), quote=True)
 
 
 _PREVIEW_CSS = """
@@ -143,10 +147,13 @@ def _render_preview(schema: dict, rows: list[dict], *, cost: float | None,
         body += "<tr>" + "".join(
             f"<td>{_html_escape(str(row.get(c, '')))}</td>" for c in cols
         ) + "</tr>"
+    # The schema is always Bedrock-designed, so a paid call happened. cost is
+    # None only when the estimate itself failed — say so honestly rather than
+    # implying the run was free.
     if cost is not None:
         cost_badge = f'<span class="badge cost">◆ schema ≈ ${cost:.4f}</span>'
     else:
-        cost_badge = '<span class="badge free">● $0.00 · offline</span>'
+        cost_badge = '<span class="badge cost">◆ schema cost: unavailable</span>'
     pii_badge = (
         f'<span class="badge pii" title="{_html_escape(pii_note)}">⚠ PII audited</span>'
         if pii_note else ""
@@ -257,11 +264,11 @@ def create_app() -> FastAPI:
                 schema = json.loads(Path(res["output"]["schema_path"]).read_text())
                 cost = _rough_cost(res["output"].get("bedrock_usage", {}))
 
-            _validate_schema_shape(schema)
-            gen = run_generation(GenerateConfig(schema=schema, rows=PREVIEW_ROWS,
-                                                seed=seed, export_format="json",
-                                                output_dir=str(tdp)))
-            preview_rows = json.loads(Path(gen["output"]["rows_path"]).read_text())
+            # Render the sample straight from the streaming generator (which
+            # validates the schema as its first step) — no temp-file round trip.
+            preview_rows = json.loads(
+                "".join(stream_rows(schema, PREVIEW_ROWS, export_format="json", seed=seed))
+            )
 
         # Stash the schema + the requested full count for the download step.
         sid = request.cookies.get("sid") or uuid.uuid4().hex
@@ -288,15 +295,41 @@ def create_app() -> FastAPI:
         rows = max(0, min(rows, MAX_DOWNLOAD_ROWS))
         fmt = format if format in ("csv", "json") else "csv"
         media = "text/csv" if fmt == "csv" else "application/json"
-        fname = f"{schema.get('name', 'dataset')}.{fmt}"
-        # Stream row-by-row → constant memory → the full requested count, no cap.
+        fname = _safe_filename(str(schema.get("name", "dataset")), fmt)
+
+        # Drive the generator and pull the FIRST chunk eagerly, so any error
+        # (invalid schema, bad faker provider, bad regex) surfaces as a clean
+        # 4xx/5xx BEFORE the 200 + headers are committed — rather than aborting
+        # mid-stream and leaving the client a truncated body under HTTP 200.
+        gen = stream_rows(schema, rows, export_format=fmt, seed=seed)
+        try:
+            first = next(gen, "")
+        except SchemaError as exc:
+            return PlainTextResponse(f"Cannot generate: {exc.message}", status_code=400)
+
+        def _body():
+            yield first
+            yield from gen
+
         return StreamingResponse(
-            stream_rows(schema, rows, export_format=fmt, seed=seed),
+            _body(),
             media_type=media,
             headers={"content-disposition": f'attachment; filename="{fname}"'},
         )
 
     return app
+
+
+def _safe_filename(name: str, ext: str) -> str:
+    """Slugify a (model-generated) schema name into a header-safe filename.
+
+    The schema name flows from Bedrock and was being interpolated raw into the
+    content-disposition header; a quote or CR/LF could corrupt or inject the
+    header. Keep only alnum/dash/underscore/dot, collapse the rest.
+    """
+    import re as _re
+    slug = _re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._-")
+    return f"{slug or 'dataset'}.{ext}"
 
 
 def _compose_prompt(business, shape, year, growth, variation, granularity) -> str:
@@ -351,21 +384,25 @@ def _candidate_fields(text: str) -> list[str]:
 
 
 def _pii_field_names(text: str, comprehend) -> set[str]:
-    """Flag candidate fields whose label/value line Comprehend marks as PII."""
+    """Flag fields whose values Comprehend marks as PII.
+
+    Collects the values per `Label: value` field, then delegates to
+    extract._pii_fields, which scans ONE concatenated request per field (not
+    one per line) — the same batched logic the CLI extract stage uses.
+    """
     import re
-    flagged: set[str] = set()
+
+    from pocsynth.extract import _pii_fields
+
+    by_field: dict[str, list[str]] = {}
     for line in text.splitlines():
         m = re.match(r"\s*([A-Za-z][A-Za-z _]{1,40}):\s*(.+)", line)
         if not m:
             continue
         name = m.group(1).strip().lower().replace(" ", "_")
-        try:
-            resp = comprehend.detect_pii_entities(Text=m.group(2)[:4000], LanguageCode="en")
-        except Exception:  # noqa: BLE001
-            continue
-        if resp.get("Entities"):
-            flagged.add(name)
-    return flagged
+        by_field.setdefault(name, []).append(m.group(2))
+    records = [{name: " ".join(vals)} for name, vals in by_field.items()]
+    return _pii_fields(records, comprehend)
 
 
 def _rough_cost(usage: dict) -> float | None:

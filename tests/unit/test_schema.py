@@ -141,12 +141,34 @@ class TestWeights:
         merged = merge_observations([page], cap=20)
         assert len(merged[0]["value_counts"]) == 20
 
+    def test_merge_tolerates_malformed_value_counts(self):
+        # Model-controlled value_counts may be a list, a non-numeric count, or
+        # absent — merge must degrade, not raise.
+        merged = merge_observations([
+            {"fields": [
+                {"name": "a", "value_counts": {"CA": "many", "NY": 2}},  # non-numeric
+                {"name": "b", "value_counts": ["x", "y", "x"]},          # bare list
+                {"name": "c", "value_counts": "garbage"},                # wrong type
+            ]},
+        ])
+        by = {f["name"]: f["value_counts"] for f in merged}
+        assert by["a"] == {"CA": 1, "NY": 2}      # non-numeric → 1
+        assert by["b"] == {"x": 2, "y": 1}        # list → count 1 each, summed
+        assert by["c"] == {}                       # unusable → empty, no crash
+
 
 # ---------- lint + fix + doc ----------
 class TestLint:
     def test_unknown_provider(self):
         issues = lint_schema(_schema([{"name": "a", "type": "string", "faker": "not_a_provider"}]))
         assert any(i["issue"] == "unknown_faker_provider" for i in issues)
+
+    def test_proxy_control_methods_flagged_as_unknown(self):
+        # format / seed_instance are callable on the Faker proxy but are not
+        # data providers; lint must flag them so they never reach generation.
+        for bad in ("format", "seed_instance"):
+            issues = lint_schema(_schema([{"name": "a", "type": "string", "faker": bad}]))
+            assert any(i["issue"] == "unknown_faker_provider" for i in issues), bad
 
     def test_bad_regex(self):
         issues = lint_schema(_schema([{"name": "a", "type": "string", "regex": "([unclosed"}]))
