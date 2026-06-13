@@ -58,8 +58,8 @@ test     (free)  rows + schema ───► validation report (exit 7 if invalid
 
 ```bash
 # Fastest path — a bundled preset, zero AWS, instant:
-pocsynth presets                                            # b2b_saas, ecommerce_orders, healthcare_lite
-pocsynth generate --preset b2b_saas --rows 1000 --seed 42 -o ./out
+pocsynth presets                                            # 10 verticals: b2b_saas, crm_contacts, insurance_claims, security_telemetry, …
+pocsynth generate --preset crm_contacts --rows 1000 --seed 42 -o ./out
 pocsynth test --rows ./out/rows.csv --schema ./out/schema.json
 
 # From a natural-language description (one small paid call):

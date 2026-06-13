@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "name": "loyalty_pos_transactions",
+  "description": "Retail loyalty point-of-sale transactions, one row per transaction (synthetic).",
+  "fields": [
+    {"name": "txn_id", "type": "string", "regex": "TXN-[0-9]{10}", "description": "transaction identifier"},
+    {"name": "loyalty_id", "type": "string", "regex": "LOY-[0-9]{8}", "description": "loyalty member identifier"},
+    {"name": "store_id", "type": "string", "regex": "STR-[0-9]{4}", "description": "store identifier"},
+    {"name": "tier", "type": "string", "enum": ["bronze", "silver", "gold", "platinum"], "weights": {"bronze": 0.45, "silver": 0.3, "gold": 0.18, "platinum": 0.07}, "description": "loyalty tier"},
+    {"name": "department", "type": "string", "enum": ["grocery", "apparel", "electronics", "home", "pharmacy", "fuel"], "weights": {"grocery": 0.3, "apparel": 0.15, "electronics": 0.15, "home": 0.15, "pharmacy": 0.15, "fuel": 0.1}, "description": "store department"},
+    {"name": "basket_size", "type": "integer", "faker": "random_int", "faker_args": {"min": 1, "max": 40}, "description": "items in basket"},
+    {"name": "amount", "type": "number", "faker": "pyfloat", "faker_args": {"min_value": 1.5, "max_value": 650.0, "right_digits": 2}, "description": "transaction total (USD)"},
+    {"name": "points_earned", "type": "integer", "faker": "random_int", "faker_args": {"min": 0, "max": 1300}, "description": "loyalty points earned"},
+    {"name": "payment_method", "type": "string", "enum": ["card", "cash", "mobile", "gift_card"], "weights": {"card": 0.55, "cash": 0.2, "mobile": 0.18, "gift_card": 0.07}, "description": "tender type"},
+    {"name": "txn_at", "type": "datetime", "faker": "date_time_this_year", "description": "transaction timestamp"}
+  ]
+}

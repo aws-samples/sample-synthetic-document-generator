@@ -17,10 +17,19 @@ from pocsynth.errors import SchemaError
 from pocsynth.schema import _validate_schema_shape
 
 # name -> one-line description (kept in sync with the shipped *.json files).
+# Every preset is fully synthetic by construction (faker/enum/regex only, no real
+# source) so generated rows are safe to share with no `verify` step needed.
 _PRESETS: dict[str, str] = {
     "b2b_saas": "B2B SaaS customer accounts: company, plan tier, MRR, seats, region.",
     "ecommerce_orders": "E-commerce orders: order id, SKU, category, quantity, amount, channel, status.",
     "healthcare_lite": "Healthcare-lite patient intake (synthetic): name, DOB, state, plan, MRN.",
+    "crm_contacts": "CRM contacts: name, email, company, title, lead source, lifecycle stage, score.",
+    "insurance_claims": "Insurance claims intake: claim/policy id, type, state, amount, status, channel.",
+    "utility_meter": "Utility smart-meter reads: meter/account id, service, consumption, voltage, quality.",
+    "loyalty_pos": "Retail loyalty POS transactions: member tier, department, basket, amount, points.",
+    "ad_campaign": "Digital ad-campaign daily performance: channel, impressions, clicks, conversions, spend.",
+    "knowledge_corpus": "Knowledge-base article corpus (RAG seed): title, body, category, audience, status.",
+    "security_telemetry": "Security/auth-event telemetry: user, source IP, event type, geo, risk score, outcome.",
 }
 
 

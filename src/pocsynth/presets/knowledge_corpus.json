@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "name": "knowledge_corpus",
+  "description": "Knowledge-base / support article corpus, one row per document (synthetic; seeds RAG demos).",
+  "fields": [
+    {"name": "doc_id", "type": "string", "regex": "KB-[0-9]{6}", "description": "document identifier"},
+    {"name": "title", "type": "string", "faker": "sentence", "faker_args": {"nb_words": 6}, "description": "article title"},
+    {"name": "category", "type": "string", "enum": ["getting-started", "billing", "troubleshooting", "security", "api", "integrations", "faq"], "weights": {"getting-started": 0.15, "billing": 0.15, "troubleshooting": 0.2, "security": 0.12, "api": 0.15, "integrations": 0.13, "faq": 0.1}, "description": "content category"},
+    {"name": "body", "type": "string", "faker": "paragraph", "faker_args": {"nb_sentences": 8}, "description": "article body text"},
+    {"name": "audience", "type": "string", "enum": ["end-user", "admin", "developer"], "weights": {"end-user": 0.5, "admin": 0.3, "developer": 0.2}, "description": "intended audience"},
+    {"name": "word_count", "type": "integer", "faker": "random_int", "faker_args": {"min": 80, "max": 3000}, "description": "approximate word count"},
+    {"name": "helpful_votes", "type": "integer", "faker": "random_int", "faker_args": {"min": 0, "max": 1200}, "description": "helpful votes"},
+    {"name": "status", "type": "string", "enum": ["draft", "published", "archived"], "weights": {"draft": 0.1, "published": 0.8, "archived": 0.1}, "description": "publication status"},
+    {"name": "updated_date", "type": "date", "faker": "date_this_year", "description": "last updated date"}
+  ]
+}
