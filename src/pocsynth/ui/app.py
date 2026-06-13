@@ -27,18 +27,24 @@ import fitz
 from fastapi import FastAPI, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse, StreamingResponse
 
+from pocsynth import __version__
 from pocsynth.comprehend import scan_for_pii
 from pocsynth.errors import SchemaError
 from pocsynth.generate import stream_rows
 from pocsynth.schema import field_names
 from pocsynth.schemagen import SchemaConfig, run_schema
+from pocsynth.verify import verify_values
 
 # In-memory schema store keyed by a session id.
 _SCHEMA_STORE: dict[str, dict[str, Any]] = {}
+# Per-session safety verdict + attestation (F4 / ADR-0010, ADR-0011). The
+# download endpoint is fail-closed: a `fail` verdict here blocks the download.
+_ATTESTATION_STORE: dict[str, dict[str, Any]] = {}
 
 PREVIEW_ROWS = 10               # rows shown in the preview pane
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024   # 25 MB cap on uploaded seed PDFs
 MAX_SCHEMA_STORE = 512          # bound the session schema cache (FIFO eviction)
+MIN_PII_VALUE_LEN = 4           # ignore very short PII values (false-positive guard)
 # Downloads stream row-by-row (constant memory), so the only ceiling is a
 # sanity backstop against a typo'd 10-billion request, not a product limit.
 MAX_DOWNLOAD_ROWS = 100_000_000
@@ -181,6 +187,102 @@ def _render_preview(schema: dict, rows: list[dict], *, cost: float | None,
     )
 
 
+_SAFETY_CSS = """
+<style>
+ #safety .sp{margin-top:1.2rem; border-radius:14px; padding:1.1rem 1.3rem;
+   border:1.5px solid var(--line); background:var(--card); animation:fade .3s ease;}
+ #safety .sp.pass{border-color:var(--teal); background:var(--teal-soft);}
+ #safety .sp.fail{border-color:var(--vermilion); background:var(--vermilion-soft);}
+ #safety .sp-head{display:flex; align-items:center; gap:.6rem; flex-wrap:wrap;}
+ #safety .verdict{font-family:'JetBrains Mono',monospace; font-weight:600; font-size:.85rem;
+   letter-spacing:.05em; padding:.3rem .7rem; border-radius:8px; display:inline-flex; gap:.4rem;}
+ #safety .verdict.pass{background:var(--teal); color:#fff;}
+ #safety .verdict.fail{background:var(--vermilion); color:#fff;}
+ #safety .verdict.na{background:var(--ink-soft); color:#fff;}
+ #safety h4{font-family:'Fraunces',serif; font-weight:600; font-size:1.1rem; margin:0;}
+ #safety .facts{font-family:'JetBrains Mono',monospace; font-size:.78rem; color:var(--ink-soft);
+   margin:.7rem 0 0; line-height:1.9;}
+ #safety .facts b{color:var(--ink);}
+ #safety .leaks{font-family:'JetBrains Mono',monospace; font-size:.76rem; color:var(--vermilion);
+   margin:.5rem 0 0;}
+ #safety .att{margin-top:.8rem;}
+ #safety .att a{font-family:'JetBrains Mono',monospace; font-size:.76rem; color:var(--teal);
+   text-decoration:underline; cursor:pointer;}
+ #safety .blocked{font-family:'Hanken Grotesk',sans-serif; font-weight:600; color:var(--vermilion);
+   margin-top:.6rem;}
+</style>"""
+
+
+def _render_safety_panel(att: dict, *, pii_entities: int, suppressed_fields: list[str]) -> str:
+    """The safety / attestation panel (F4). Reuses the preview-badge palette.
+
+    Shows: PII entities found, fields suppressed by the guard, the verify verdict
+    (✓ PASSED / ✗ FAILED + leaked fields), and a Download attestation link. On a
+    failed verdict it states plainly the output is NOT cleared for sharing.
+    """
+    verdict = att["verdict"]
+    leaks = att.get("leaks", [])
+    if verdict == "fail":
+        cls, badge, badge_cls = "fail", "✗ FAILED", "fail"
+        headline = "Not cleared for sharing"
+    elif verdict == "pass":
+        cls, badge, badge_cls = "pass", "✓ PASSED", "pass"
+        headline = "Cleared for sharing"
+    else:  # not_applicable
+        cls, badge, badge_cls = "", "— N/A", "na"
+        headline = "No real source to verify"
+
+    suppressed = ", ".join(_html_escape(f) for f in suppressed_fields) or "none"
+    facts = (
+        f'<div class="facts">'
+        f'<div>PII entities found in source: <b>{int(pii_entities)}</b></div>'
+        f'<div>fields suppressed by the PII guard: <b>{suppressed}</b></div>'
+        f'<div>real values checked against output: <b>{att.get("candidate_pii_values", 0)}</b> '
+        f'(rows + schema)</div>'
+        f"</div>"
+    )
+    leak_html = ""
+    blocked_html = ""
+    if verdict == "fail":
+        previews = ", ".join(_html_escape(lk["value_preview"]) for lk in leaks)
+        where = sorted({w for lk in leaks for w in lk.get("where", [])})
+        leak_html = (
+            f'<div class="leaks">⚠ {len(leaks)} real value(s) leaked into '
+            f'{_html_escape(", ".join(where))}: {previews}</div>'
+        )
+        blocked_html = (
+            '<div class="blocked">Download blocked — regenerate or fix the schema '
+            "before sharing.</div>"
+        )
+    att_link = (
+        '<div class="att"><a hx-get="/attestation" hx-target="#att-sink" '
+        'hx-swap="none">↓ Download attestation (JSON)</a>'
+        '<span id="att-sink"></span></div>'
+    )
+    return (
+        _SAFETY_CSS
+        + '<div id="safety"><div class="sp ' + cls + '">'
+        + '<div class="sp-head">'
+        + f'<span class="verdict {badge_cls}">{badge}</span>'
+        + f"<h4>{_html_escape(headline)}</h4></div>"
+        + facts + leak_html
+        + att_link
+        + blocked_html
+        + "</div></div>"
+    )
+
+
+def _real_pii_from_scan(detected: list[dict], min_len: int = MIN_PII_VALUE_LEN) -> set[str]:
+    """Distinct real PII values Comprehend flagged in the source, long enough to
+    scan for without false positives."""
+    values: set[str] = set()
+    for ent in detected:
+        v = str(ent.get("Value", "")).strip()
+        if len(v) >= min_len:
+            values.add(v)
+    return values
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="pocsynth — Open Source Synthetic Data Generator")
 
@@ -216,10 +318,17 @@ def create_app() -> FastAPI:
 
         prompt = (prompt or "").strip() or None
         business = business or None
+        # Set on the document path: real PII values + suppressed fields + entity
+        # count, used to build the F4 safety panel after generation.
+        real_pii_values: set[str] = set()
+        suppressed_fields: list[str] = []
+        pii_entities = 0
+        seeded_from_document = False
 
         with tempfile.TemporaryDirectory() as td:
             tdp = Path(td)
             if seed_document is not None and seed_document.filename:
+                seeded_from_document = True
                 bedrock = _client(get_bedrock_client)
                 comprehend = _client(get_comprehend_client)
                 pdf_bytes = seed_document.file.read(MAX_UPLOAD_BYTES + 1)
@@ -233,6 +342,8 @@ def create_app() -> FastAPI:
                 detected = scan_for_pii(text, folder_name=str(tdp / "pii-audit"),
                                         filename="upload", comprehend=comprehend)
                 pii_fields = _pii_field_names(text, comprehend)
+                real_pii_values = _real_pii_from_scan(detected)
+                pii_entities = len(detected)
                 pii_note = (
                     f"PII audit: {len(detected)} entities found; "
                     f"{len(pii_fields)} field(s) flagged — real values are barred "
@@ -252,6 +363,11 @@ def create_app() -> FastAPI:
                                               output_dir=str(tdp), bedrock_client=bedrock))
                 schema = json.loads(Path(res["output"]["schema_path"]).read_text())
                 cost = _rough_cost(res["output"].get("bedrock_usage", {}))
+                # Fields the PII guard suppressed are noted in the lint report.
+                suppressed_fields = [
+                    n.get("field") for n in res.get("lint", {}).get("notes", [])
+                    if n.get("issue") == "pii_enum_suppressed" and n.get("field")
+                ]
             else:
                 # Pills OR a free-text prompt → compose a precise NL prompt and
                 # infer the schema from it (the same Bedrock path).
@@ -275,8 +391,40 @@ def create_app() -> FastAPI:
         if sid not in _SCHEMA_STORE and len(_SCHEMA_STORE) >= MAX_SCHEMA_STORE:
             _SCHEMA_STORE.pop(next(iter(_SCHEMA_STORE)), None)
         _SCHEMA_STORE[sid] = schema
-        resp = HTMLResponse(_render_preview(schema, preview_rows, cost=cost,
-                                            pii_note=pii_note, full_rows=rows, seed=seed))
+
+        # F4 safety panel: on the document path, verify the generated output (and
+        # the shared Schema artifact) carries no real PII value (ADR-0010). The
+        # preview rows are byte-identical to the start of the full download (same
+        # seed), so a clean preview + a deterministic generator is a sound proxy.
+        safety_html = ""
+        if seeded_from_document:
+            rows_text = "".join(
+                stream_rows(schema, PREVIEW_ROWS, export_format="csv", seed=seed)
+            )
+            verdict, leaks, schema_scanned = verify_values(real_pii_values, rows_text, schema)
+            attestation = {
+                "schema": 1, "verdict": verdict, "tool_version": __version__,
+                "source": (seed_document.filename or "upload") if seed_document else "upload",
+                "candidate_pii_values": len(real_pii_values),
+                "leaks": leaks,
+                "scanned": {"rows": True, "schema": schema_scanned},
+                "suppressed_fields": suppressed_fields,
+            }
+            if sid not in _ATTESTATION_STORE and len(_ATTESTATION_STORE) >= MAX_SCHEMA_STORE:
+                _ATTESTATION_STORE.pop(next(iter(_ATTESTATION_STORE)), None)
+            _ATTESTATION_STORE[sid] = attestation
+            safety_html = _render_safety_panel(
+                attestation, pii_entities=pii_entities, suppressed_fields=suppressed_fields
+            )
+        else:
+            # Synthetic seed (pills/prompt) → no real source; clear any stale verdict.
+            _ATTESTATION_STORE.pop(sid, None)
+
+        resp = HTMLResponse(
+            _render_preview(schema, preview_rows, cost=cost, pii_note=pii_note,
+                            full_rows=rows, seed=seed)
+            + safety_html
+        )
         resp.set_cookie("sid", sid, httponly=True, samesite="strict")
         return resp
 
@@ -292,6 +440,15 @@ def create_app() -> FastAPI:
         if schema is None:
             return PlainTextResponse("No schema yet; run a preview first.",
                                      status_code=400)
+        # Fail-closed (ADR-0010/0011): if the safety verdict for this session is
+        # `fail`, a real PII value leaked — refuse to serve the dataset as safe.
+        att = _ATTESTATION_STORE.get(sid) if sid else None
+        if att and att.get("verdict") == "fail":
+            return PlainTextResponse(
+                "Download blocked: verification FAILED — a real PII value leaked into "
+                "the output. NOT cleared for sharing. Regenerate or fix the schema.",
+                status_code=409,
+            )
         rows = max(0, min(rows, MAX_DOWNLOAD_ROWS))
         fmt = format if format in ("csv", "json") else "csv"
         media = "text/csv" if fmt == "csv" else "application/json"
@@ -315,6 +472,21 @@ def create_app() -> FastAPI:
             _body(),
             media_type=media,
             headers={"content-disposition": f'attachment; filename="{fname}"'},
+        )
+
+    @app.get("/attestation")
+    def attestation(request: Request):
+        """Download the session's safety Attestation (F4). Available only after a
+        document-seeded preview; synthetic seeds have nothing to attest."""
+        sid = request.cookies.get("sid")
+        att = _ATTESTATION_STORE.get(sid) if sid else None
+        if att is None:
+            return PlainTextResponse(
+                "No attestation: upload a document and preview first.", status_code=404)
+        return StreamingResponse(
+            iter([json.dumps(att, indent=2)]),
+            media_type="application/json",
+            headers={"content-disposition": 'attachment; filename="attestation.json"'},
         )
 
     return app

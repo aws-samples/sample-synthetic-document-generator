@@ -1,0 +1,173 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+"""F4: the UI safety/attestation panel on the document-upload flow (ADR-0010/0011).
+
+The panel is wired into the existing upload→preview→download flow (no new
+screens). It surfaces: PII entities found, fields suppressed by the guard, the
+verify verdict (✓ PASSED / ✗ FAILED + leaked fields), and a Download-attestation
+link. On FAILED it states the output is NOT cleared for sharing and `/download`
+is fail-closed (HTTP 409).
+
+These run through the FastAPI TestClient with injected Bedrock/Comprehend stubs;
+the browser-driven smoke is in tests/browser/.
+"""
+
+from __future__ import annotations
+
+import json
+from unittest.mock import MagicMock
+
+import pytest
+
+from .conftest import UI_AVAILABLE, UI_SKIP_REASON, bedrock_schema_stub
+
+pytestmark = pytest.mark.skipif(not UI_AVAILABLE, reason=UI_SKIP_REASON)
+
+if UI_AVAILABLE:
+    from fastapi.testclient import TestClient
+
+    from pocsynth.ui.app import create_app, get_bedrock_client, get_comprehend_client
+
+
+@pytest.fixture
+def client():
+    return TestClient(create_app())
+
+
+def _override(app, *, bedrock=None, comprehend=None):
+    if bedrock is not None:
+        app.dependency_overrides[get_bedrock_client] = lambda: bedrock
+    if comprehend is not None:
+        app.dependency_overrides[get_comprehend_client] = lambda: comprehend
+
+
+def _comprehend_whole_value(*markers):
+    """A Comprehend stub returning a whole-value PII span for each marker present
+    in the scanned text (so `_real_pii_from_scan` captures the full real value)."""
+    client = MagicMock()
+
+    def _detect(Text="", **_kw):
+        ents = []
+        for m in markers:
+            idx = Text.find(m)
+            if idx != -1:
+                ents.append({"Type": "OTHER", "Score": 0.99,
+                             "BeginOffset": idx, "EndOffset": idx + len(m)})
+        return {"Entities": ents}
+
+    client.detect_pii_entities.side_effect = _detect
+    return client
+
+
+class TestSafetyPanelPass:
+    def test_clean_document_shows_passed_and_clears(self, client, customer_pdf):
+        # The model binds the PII field to faker.name (guard suppresses the real
+        # value), so no real value reaches rows or schema → verify PASSES.
+        app = client.app
+        _override(
+            app,
+            bedrock=bedrock_schema_stub(schema_fields=[
+                {"name": "patient", "type": "string", "faker": "name", "pii": True},
+                {"name": "state", "type": "string", "enum": ["CA", "NY"]},
+            ]),
+            comprehend=_comprehend_whole_value("Alice Hernandez", "555-22-7788"),
+        )
+        with open(customer_pdf, "rb") as fh:
+            r = client.post(
+                "/preview",
+                files={"seed_document": ("customer_intake.pdf", fh, "application/pdf")},
+                data={"rows": "300"},
+            )
+        assert r.status_code == 200
+        assert 'id="safety"' in r.text
+        assert "✓ PASSED" in r.text
+        assert "Cleared for sharing" in r.text
+        # The full real values must not appear anywhere in the panel/preview.
+        assert "Alice Hernandez" not in r.text
+        assert "555-22-7788" not in r.text
+
+    def test_attestation_downloadable_after_pass(self, client, customer_pdf):
+        app = client.app
+        _override(
+            app,
+            bedrock=bedrock_schema_stub(schema_fields=[
+                {"name": "patient", "type": "string", "faker": "name", "pii": True}]),
+            comprehend=_comprehend_whole_value("Alice Hernandez"),
+        )
+        with open(customer_pdf, "rb") as fh:
+            client.post(
+                "/preview",
+                files={"seed_document": ("customer_intake.pdf", fh, "application/pdf")},
+                data={"rows": "50"})
+        r = client.get("/attestation")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("application/json")
+        att = json.loads(r.text)
+        assert att["verdict"] == "pass"
+        assert att["tool_version"]
+        # The attestation never carries a full real value.
+        assert "Alice Hernandez" not in r.text
+
+
+class TestSafetyPanelFailClosed:
+    def _setup_leak(self, app):
+        # The fragment hole: the guard strips the PII enum, but the model echoed
+        # the real value into the field DESCRIPTION, which the guard doesn't touch.
+        _override(
+            app,
+            bedrock=bedrock_schema_stub(schema_fields=[
+                {"name": "patient", "type": "string", "faker": "name", "pii": True,
+                 "description": "patient full name, e.g. Alice Hernandez"},
+                {"name": "state", "type": "string", "enum": ["CA", "NY"]},
+            ]),
+            comprehend=_comprehend_whole_value("Alice Hernandez"),
+        )
+
+    def test_leak_shows_failed_panel(self, client, customer_pdf):
+        app = client.app
+        self._setup_leak(app)
+        with open(customer_pdf, "rb") as fh:
+            r = client.post(
+                "/preview",
+                files={"seed_document": ("customer_intake.pdf", fh, "application/pdf")},
+                data={"rows": "100"})
+        assert r.status_code == 200
+        assert "✗ FAILED" in r.text
+        assert "Not cleared for sharing" in r.text
+        assert "Download blocked" in r.text
+        # Even when reporting the leak, the full real value is masked.
+        assert "Alice Hernandez" not in r.text
+
+    def test_download_is_fail_closed(self, client, customer_pdf):
+        app = client.app
+        self._setup_leak(app)
+        with open(customer_pdf, "rb") as fh:
+            client.post(
+                "/preview",
+                files={"seed_document": ("customer_intake.pdf", fh, "application/pdf")},
+                data={"rows": "100"})
+        r = client.post("/download", data={"rows": "100", "format": "csv", "seed": "1"})
+        assert r.status_code == 409
+        assert "NOT cleared for sharing" in r.text
+
+
+class TestSyntheticSeedNoPanel:
+    def test_pills_path_has_no_safety_panel(self, client):
+        # Synthetic-by-construction seed → no real source → no panel, no block.
+        app = client.app
+        _override(app, bedrock=bedrock_schema_stub(schema_fields=[
+            {"name": "x", "type": "string", "faker": "word"}]))
+        r = client.post("/preview", data={"business": "Fintech", "rows": "10"})
+        assert r.status_code == 200
+        assert 'id="safety"' not in r.text
+        # /attestation 404s when nothing was attested this session.
+        r2 = client.get("/attestation")
+        assert r2.status_code == 404
+
+    def test_download_not_blocked_on_synthetic(self, client):
+        app = client.app
+        _override(app, bedrock=bedrock_schema_stub(schema_fields=[
+            {"name": "x", "type": "string", "faker": "word"}]))
+        client.post("/preview", data={"business": "Retail", "rows": "10"})
+        r = client.post("/download", data={"rows": "20", "format": "csv", "seed": "1"})
+        assert r.status_code == 200

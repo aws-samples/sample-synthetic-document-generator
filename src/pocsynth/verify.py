@@ -109,6 +109,39 @@ def _schema_searchable_text(schema: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def verify_values(
+    real_values: set[str], rows_text: str, schema: dict[str, Any] | None,
+) -> tuple[str, list[dict[str, Any]], bool]:
+    """Core scan, shared by the CLI `verify` and the UI safety panel.
+
+    Given the set of real PII values, the generated rows as text, and the
+    (optional) Schema artifact, return (verdict, leaks, schema_scanned). The
+    verdict is `not_applicable` when there are no real values to check (a public
+    or synthetic seed), else `fail` if any value appears in the rows or schema,
+    else `pass`. Leaks carry only a masked preview — never the full value.
+    """
+    schema_text = _schema_searchable_text(schema) if schema else ""
+    schema_scanned = bool(schema_text)
+
+    if not real_values:
+        return "not_applicable", [], schema_scanned
+
+    leaks: list[dict[str, Any]] = []
+    for val in sorted(real_values):
+        in_rows = val in rows_text
+        in_schema = schema_scanned and val in schema_text
+        if in_rows or in_schema:
+            where = []
+            if in_rows:
+                where.append("rows")
+            if in_schema:
+                where.append("schema")
+            leaks.append({"value_preview": _mask(val), "where": where})
+
+    verdict = "fail" if leaks else "pass"
+    return verdict, leaks, schema_scanned
+
+
 def run_verify(cfg: VerifyConfig, on_event: EventCallback = None) -> dict[str, Any]:
     emit = on_event or _noop
 
@@ -124,27 +157,10 @@ def run_verify(cfg: VerifyConfig, on_event: EventCallback = None) -> dict[str, A
 
     real_values = _real_pii_values(sample, cfg.min_value_len)
     rows_text, rows_hash = _load_rows_text(Path(cfg.rows_path), cfg.rows_in_format)
-    schema_text = _schema_searchable_text(cfg.schema) if cfg.schema else ""
 
     emit("verify_started", candidate_values=len(real_values))
 
-    # If the Sample carries no flagged PII values, verification is N/A (e.g. a
-    # public-data seed or a hand-authored schema with no real source).
-    applicable = bool(real_values)
-
-    leaks: list[dict[str, Any]] = []
-    for val in sorted(real_values):
-        in_rows = val in rows_text
-        in_schema = bool(schema_text) and val in schema_text
-        if in_rows or in_schema:
-            where = []
-            if in_rows:
-                where.append("rows")
-            if in_schema:
-                where.append("schema")
-            leaks.append({"value_preview": _mask(val), "where": where})
-
-    verdict = "not_applicable" if not applicable else ("fail" if leaks else "pass")
+    verdict, leaks, schema_scanned = verify_values(real_values, rows_text, cfg.schema)
     source = sample.get("source", "")
     source_hash = hashlib.sha256(str(source).encode("utf-8")).hexdigest() if source else None
 
@@ -158,7 +174,7 @@ def run_verify(cfg: VerifyConfig, on_event: EventCallback = None) -> dict[str, A
         "rows_sha256": rows_hash,
         "candidate_pii_values": len(real_values),
         "leaks": leaks,
-        "scanned": {"rows": True, "schema": bool(schema_text)},
+        "scanned": {"rows": True, "schema": schema_scanned},
     }
 
     att_path = None
@@ -172,7 +188,7 @@ def run_verify(cfg: VerifyConfig, on_event: EventCallback = None) -> dict[str, A
     emit("verify_complete", verdict=verdict, leaks=len(leaks))
     return {
         "input": {"rows": str(cfg.rows_path), "sample": str(cfg.sample_path),
-                  "schema_scanned": bool(schema_text)},
+                  "schema_scanned": schema_scanned},
         "verdict": verdict,
         "leaked_fields": [],  # filled below from leaks for convenience
         "attestation": attestation,

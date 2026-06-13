@@ -83,6 +83,10 @@ pocsynth verify --rows ./out/rows.csv --sample ./out/sample.json --schema ./out/
 
 **Determinism.** `--seed` makes generation byte-reproducible. **Distributions:** low-cardinality `enum` fields carry real-world frequency weights (inferred from the source document, model-proposed, or uniform — your choice via `--distribution`).
 
+**Secure prototyping in 1 command.** Two one-page guides walk the two personas through `run`:
+- [For the AWS SA (sandbox)](docs/guides/secure-prototyping-sa.md) — `run --preset … → done`, $0, synthetic by construction.
+- [For the Customer-runner (own account)](docs/guides/secure-prototyping-customer.md) — `run --document … --yes → attestation for your reviewer`, fail-closed if a real value leaked.
+
 ### Demo UI
 
 A local web UI (Metabase-style) ships behind an optional extra:

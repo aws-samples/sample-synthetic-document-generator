@@ -5,6 +5,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — secure-prototyping: UI safety panel + per-persona guides (F4)
+- **UI safety/attestation panel** wired into the *existing* upload→preview→download flow (no new screens; reuses the preview-badge palette). On a document-seeded preview it shows: PII entities found, fields suppressed by the guard, the **verify verdict** (✓ PASSED / ✗ FAILED), and a **Download attestation** link (`GET /attestation`). On FAILED it names the leak (masked preview, never the real value) and states "NOT cleared for sharing".
+- **Fail-closed download** — `POST /download` returns **HTTP 409** when the session's safety verdict is `fail` (ADR-0010/0011), so a leaked dataset is never served as safe. Synthetic seeds (pills/prompt) get no panel and are never blocked.
+- **`verify_values()`** factored out of `run_verify` as the shared scan core, so the UI panel and the CLI `verify` use exactly the same whole-value matching (no drift).
+- **Two one-page persona guides** under `docs/guides/`: `secure-prototyping-sa.md` (preset/prompt fast path, $0, synthetic by construction) and `secure-prototyping-customer.md` (document path, cost gate, fail-closed attestation), linked from the README.
+- **Tests (+6 + browser):** `tests/scenarios/test_ui_safety_panel.py` (PASS panel + attestation download, FAILED panel + 409 fail-closed download, masked leak, synthetic-seed has no panel) through the FastAPI TestClient; plus a Playwright browser smoke of the real upload→preview→download flow confirming the panel renders, the leak is masked, and the download is blocked. Full suite **407 passed**.
+
 ### Added — secure-prototyping: one-shot `run` verb (F2, safe-by-default)
 - **`run`** — one command chains the whole pipeline so no persona threads artifacts by hand. Exactly one seed source: `--preset NAME` / `--prompt "…"` → schema → generate (the SA fast path; preset is free, prompt is one small paid call), or `--document FILE` → extract → schema → generate → **verify** (the Customer-runner path; emits the Attestation). Reuses the existing `run_*` functions verbatim — no new generation/extraction/verification logic — so the one-shot path can never drift from the individual verbs.
 - **Safe-by-default (ADR-0011):**
