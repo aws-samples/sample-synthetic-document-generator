@@ -18,6 +18,8 @@ import pytest
 from pocsynth.bedrock import MODELS
 from pocsynth.errors import PricingDataError
 from pocsynth.pricing import (
+    DEFAULT_IMAGE_TOKENS_PER_PAGE,
+    MIN_OUTPUT_TOKENS_PER_PAGE,
     actual_convert_cost,
     estimate_bedrock_cost,
     estimate_comprehend_cost,
@@ -198,6 +200,41 @@ class TestComprehendTiers:
         with pytest.raises(PricingDataError):
             estimate_comprehend_cost(100, pricing, api="fake_api")
 
+    # ---- Gap 5: exact tier-boundary behavior ----
+
+    def test_exactly_fills_tier_1_stays_single_tier(self, pricing):
+        # 10M units exactly = the tier-1 cap. Must NOT spill into tier 2.
+        result = estimate_comprehend_cost(
+            char_count=1_000_000_000,  # 10M units
+            pricing=pricing, monthly_units_already_consumed=0)
+        assert len(result["tier_breakdown"]) == 1
+        assert result["tier_breakdown"][0]["units"] == 10_000_000
+        assert result["cost_usd"] == pytest.approx(10_000_000 * 0.0001)
+
+    def test_already_at_tier_1_cap_rolls_entirely_to_tier_2(self, pricing):
+        # Tier 1 has zero remaining capacity (already consumed its 10M cap);
+        # new units must all bill at tier 2, with tier 1 omitted from breakdown.
+        result = estimate_comprehend_cost(
+            char_count=100_000,  # 1_000 units
+            pricing=pricing, monthly_units_already_consumed=10_000_000)
+        assert len(result["tier_breakdown"]) == 1
+        only = result["tier_breakdown"][0]
+        assert only["upto_units_per_month"] == 50_000_000  # tier 2
+        assert only["price_per_unit_usd"] == 0.00005
+        assert only["units"] == 1_000
+
+    def test_unbounded_final_tier_absorbs_remainder(self, pricing):
+        # Start already past the last capped tier (100M consumed) so everything
+        # lands in the final tier whose cap is None (unbounded).
+        result = estimate_comprehend_cost(
+            char_count=10_000_000,  # 100k units
+            pricing=pricing, monthly_units_already_consumed=100_000_000)
+        assert len(result["tier_breakdown"]) == 1
+        last = result["tier_breakdown"][0]
+        assert last["upto_units_per_month"] is None
+        assert last["units"] == 100_000
+        assert last["price_per_unit_usd"] == 5e-06
+
 
 # ---------- pricing_age_days ----------------------------------------------
 
@@ -305,6 +342,31 @@ class TestEstimateConvertCost:
         assert assumptions["output_tokens_estimated"] > 0
         assert assumptions["text_tokens_estimated"] >= 0
         assert "text_chars_measured" in assumptions
+
+    # ---- Gap 5: zero-char (image-only / blank) PDF ----
+
+    def test_blank_pdf_uses_image_and_min_output_tokens(self, pricing, tmp_path):
+        # A page with no text layer (scanned/image-only) yields 0 text chars.
+        # The estimate must still bill image tokens + the per-page output floor,
+        # and never produce a negative/NaN cost.
+        import fitz
+        doc = fitz.open()
+        for _ in range(2):
+            doc.new_page()  # no text inserted
+        p = tmp_path / "blank.pdf"
+        doc.save(p)
+        doc.close()
+
+        result = estimate_convert_cost(p, "sonnet", pricing, pages=2, pii_audit=False)
+        a = result["estimate"]["assumptions"]
+        assert a["text_chars_measured"] == 0
+        assert a["text_tokens_estimated"] == 0
+        # input tokens = image tokens (2 pages) + the ~200 system-prompt constant.
+        assert a["image_tokens_per_page"] == DEFAULT_IMAGE_TOKENS_PER_PAGE
+        assert result["bedrock"]["input_tokens"] >= 2 * DEFAULT_IMAGE_TOKENS_PER_PAGE
+        # output falls back to the per-page minimum floor (no text to scale from).
+        assert a["output_tokens_estimated"] == 2 * MIN_OUTPUT_TOKENS_PER_PAGE
+        assert result["total_cost_usd"] > 0
 
 
 # ---------- actual_convert_cost -------------------------------------------

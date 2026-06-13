@@ -201,6 +201,11 @@ class TestPartialSuccess:
         failed_events = [kw for n, kw in events if n == "page_failed"]
         assert len(failed_events) == 1
         assert failed_events[0]["page"] == 2
+        # Gap 1 reconciliation invariant: processed + failed == attempted.
+        assert out["pages_processed"] + len(result["page_failures"]) == out["pages_attempted"]
+        # Token accounting sums ONLY the 2 successful pages (5 in / 3 out each).
+        assert out["bedrock_usage"]["input_tokens"] == 10
+        assert out["bedrock_usage"]["output_tokens"] == 6
 
 
 class TestMultiDoc:

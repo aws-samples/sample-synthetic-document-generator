@@ -223,3 +223,27 @@ class TestEstimatePaidTargets:
         result = runner.invoke(app, ["--json", "estimate", "/no/such.pdf", "--for", "extract"])
         assert result.exit_code == 3
         assert _stdout_json(result)["error"]["code"] in ("INPUT_NOT_FOUND", "INPUT_ERROR")
+
+
+# --------------------------------------------------------------------------- #
+# Gap 3: a bad --profile surfaces as a clean AuthError (exit 4) through the CLI
+# --------------------------------------------------------------------------- #
+class TestBadProfileRouting:
+    def test_bad_profile_estimate_exit_4(self, tmp_path, monkeypatch):
+        # estimate resolves the region via the profile chain; a profile that
+        # doesn't exist must yield exit 4 (AWS_AUTH_FAILED), not a traceback.
+        from botocore.exceptions import ProfileNotFound
+
+        monkeypatch.delenv("AWS_REGION", raising=False)
+        monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+
+        def _raise(*_a, **_k):
+            raise ProfileNotFound(profile="ghost")
+
+        monkeypatch.setattr("pocsynth.aws.boto3.Session", _raise)
+        sample = tmp_path / "sample.json"
+        sample.write_text('{"schema":1,"fields":[{"name":"a","value_counts":{"x":1}}]}')
+        result = runner.invoke(app, [
+            "--json", "--profile", "ghost", "estimate", str(sample), "--for", "schema"])
+        assert result.exit_code == 4
+        assert _stdout_json(result)["error"]["code"] == "AWS_AUTH_FAILED"

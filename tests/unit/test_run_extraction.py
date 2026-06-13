@@ -131,3 +131,59 @@ class TestFailures:
                 pdf_url=str(pdf), output_dir=str(tmp_path / "o"),
                 bedrock_client=_bedrock_no_tool(), pii_audit=False,
             ))
+
+
+def _bedrock_fail_on_pages(fail_pages: set[int], payload: dict,
+                           input_tokens: int = 50, output_tokens: int = 20) -> MagicMock:
+    """A converse mock that raises on the given 1-based page numbers (via a
+    ThrottlingException ClientError) and otherwise returns a successful toolUse."""
+    from botocore.exceptions import ClientError
+    client = MagicMock()
+    state = {"n": 0}
+
+    def _converse(**_kw):
+        state["n"] += 1
+        if state["n"] in fail_pages:
+            raise ClientError(
+                {"Error": {"Code": "ThrottlingException", "Message": "slow down"}},
+                "Converse",
+            )
+        return {
+            "output": {"message": {"role": "assistant", "content": [
+                {"toolUse": {"name": "extract_records", "input": payload}}]}},
+            "usage": {"inputTokens": input_tokens, "outputTokens": output_tokens},
+            "stopReason": "tool_use",
+        }
+
+    client.converse.side_effect = _converse
+    return client
+
+
+class TestPartialFailureReconciliation:
+    """Gap 1: a mixed success/failure multi-page run must keep the envelope
+    counters and token accounting internally consistent."""
+
+    def test_mixed_failure_counters_and_token_accounting(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        pdf = _make_pdf(tmp_path, pages=3)
+        schema = {"schema": 1, "name": "t", "fields": [{"name": "name", "type": "string"}]}
+        # Page 2 of 3 fails at converse; pages 1 and 3 succeed.
+        bedrock = _bedrock_fail_on_pages(
+            {2}, {"records": [{"name": "P"}]}, input_tokens=50, output_tokens=20)
+        res = run_extraction(ExtractConfig(
+            pdf_url=str(pdf), schema=schema, output_dir=str(tmp_path / "o"),
+            bedrock_client=bedrock, pii_audit=False,
+        ))
+        out = res["output"]
+        # Reconciliation: processed + failed == attempted.
+        assert out["pages_attempted"] == 3
+        assert out["pages_processed"] == 2
+        assert len(res["page_failures"]) == 1
+        assert out["pages_processed"] + len(res["page_failures"]) == out["pages_attempted"]
+        # The failure is recorded with its page number and a translated code.
+        assert res["page_failures"][0]["page"] == 2
+        # Tokens are summed ONLY over the 2 successful pages (50+20 each).
+        assert out["bedrock_usage"]["input_tokens"] == 100
+        assert out["bedrock_usage"]["output_tokens"] == 40
+        # 2 successful conform records survived.
+        assert out["records_extracted"] == 2

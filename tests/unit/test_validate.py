@@ -153,3 +153,48 @@ class TestMalformedRowsInput:
         _write_csv(p, ["a", "extra"], [{"a": "1", "extra": "ignored"}])
         res = run_validation(ValidateConfig(rows_path=str(p), schema=s))
         assert res["valid"] is True
+
+
+class TestLargeDatasetValidation:
+    """Gap 2: validation must correctly handle a large dataset end-to-end.
+
+    (Documents that run_validation currently materializes the whole file; the
+    50k-row pass below is the upper bound exercised in CI. A streaming validate
+    is the recommended follow-up if multi-GB inputs become a requirement.)"""
+
+    def test_validates_50k_row_generated_dataset(self, tmp_path):
+        s = _schema([
+            {"name": "id", "type": "string", "regex": "ID-[0-9]{6}"},
+            {"name": "amount", "type": "number", "faker": "pyfloat",
+             "faker_args": {"min_value": 0, "max_value": 1000, "right_digits": 2}},
+            {"name": "tier", "type": "string", "enum": ["A", "B", "C"],
+             "weights": {"A": 0.6, "B": 0.3, "C": 0.1}},
+        ])
+        gen = run_generation(GenerateConfig(
+            schema=s, rows=50_000, seed=5, export_format="csv", output_dir=str(tmp_path)))
+        res = run_validation(ValidateConfig(
+            rows_path=gen["output"]["rows_path"], schema=s))
+        assert res["valid"] is True, res["violations"][:3]
+        assert res["rows_checked"] == 50_000
+
+    def test_validates_50k_row_json(self, tmp_path):
+        s = _schema([{"name": "n", "type": "integer", "faker": "random_int"}])
+        gen = run_generation(GenerateConfig(
+            schema=s, rows=50_000, seed=6, export_format="json", output_dir=str(tmp_path)))
+        res = run_validation(ValidateConfig(
+            rows_path=gen["output"]["rows_path"], schema=s))
+        assert res["valid"] is True
+        assert res["rows_checked"] == 50_000
+
+    def test_large_invalid_dataset_reports_all_violations(self, tmp_path):
+        # A column of out-of-enum values across a large file: every row flagged,
+        # exercising the violation collector at scale.
+        s = _schema([{"name": "tier", "type": "string", "enum": ["A", "B"]}])
+        p = tmp_path / "rows.csv"
+        with open(p, "w", newline="", encoding="utf-8") as fh:
+            fh.write("tier\n")
+            fh.write("ZZ\n" * 10_000)  # all invalid
+        res = run_validation(ValidateConfig(rows_path=str(p), schema=s))
+        assert res["valid"] is False
+        assert res["rows_checked"] == 10_000
+        assert res["summary"]["by_rule"]["enum"] == 10_000

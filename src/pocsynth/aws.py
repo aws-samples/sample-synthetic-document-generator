@@ -7,6 +7,9 @@ from __future__ import annotations
 import os
 
 import boto3
+from botocore.exceptions import ProfileNotFound
+
+from pocsynth.errors import AuthError
 
 DEFAULT_REGION = "us-east-1"
 
@@ -28,7 +31,16 @@ def resolve_region(cli_region: str | None, profile: str | None = None) -> tuple[
     # IMDS. We don't have a clean way to distinguish the two, so we report
     # "profile" when a profile is named and "imds" otherwise. The distinction
     # is only for debug / doctor output; neither path changes the value.
-    session = boto3.Session(profile_name=profile) if profile else boto3.Session()
+    try:
+        session = boto3.Session(profile_name=profile) if profile else boto3.Session()
+    except ProfileNotFound as exc:
+        # A named --profile that isn't in ~/.aws/config would otherwise surface
+        # as a raw botocore traceback; route it as a clean auth error (exit 4).
+        raise AuthError(
+            f"AWS profile not found: {profile!r}",
+            context={"profile": profile},
+            hint="Check the profile name, or run `aws configure --profile <name>`",
+        ) from exc
     if region := session.region_name:
         return region, "profile" if profile else "imds"
 

@@ -175,6 +175,40 @@ class TestGenerateStream:
         assert all("event" in p for p in parsed)
         assert parsed[-1]["event"] == "complete"
 
+    def test_stream_complete_envelope_equals_nonstream(self, tmp_path):
+        """Gap 4: the streamed final 'complete' event must carry the same
+        envelope as the plain --json run (modulo the wall-time field, which is
+        timing-dependent). Both use seed=1 so the result payload is identical."""
+        schema = _write_schema(tmp_path, [
+            {"name": "x", "type": "string", "faker": "word"},
+            {"name": "n", "type": "integer", "faker": "random_int"}])
+
+        nonstream = runner.invoke(app, [
+            "--json", "generate", "--schema", str(schema),
+            "--rows", "20", "--seed", "1", "-o", str(tmp_path / "a")])
+        streamed = runner.invoke(app, [
+            "--json", "--stream", "generate", "--schema", str(schema),
+            "--rows", "20", "--seed", "1", "-o", str(tmp_path / "b")])
+        assert nonstream.exit_code == 0 and streamed.exit_code == 0
+
+        ns_env = _stdout_json(nonstream)  # single JSON object
+        complete = [json.loads(ln) for ln in streamed.stdout.strip().splitlines()
+                    if ln.strip()][-1]
+
+        # Same top-level contract fields.
+        for key in ("ok", "schema", "command", "event"):
+            assert ns_env[key] == complete[key], key
+        assert complete["event"] == "complete"
+
+        # Same result payload, normalizing the timing + output-dir fields.
+        def _norm(env):
+            r = json.loads(json.dumps(env["result"]))
+            r["output"].pop("wall_time_seconds", None)
+            r["output"].pop("dir", None)
+            r["output"].pop("rows_path", None)
+            return r
+        assert _norm(ns_env) == _norm(complete)
+
 
 @pytest.mark.parametrize("cmd", [
     ["generate", "--help"], ["test", "--help"],
