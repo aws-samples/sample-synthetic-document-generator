@@ -73,6 +73,7 @@ Subcommands:
 | `test` | Validate generated rows against a schema. Exit **7** (`DATA_INVALID`) if rows violate it. | **free** |
 | `presets` | List bundled preset schemas — 10 verticals (b2b_saas, ecommerce_orders, healthcare_lite, crm_contacts, insurance_claims, utility_meter, loyalty_pos, ad_campaign, knowledge_corpus, security_telemetry). All synthetic by construction → safe to share, no `verify` needed. | **free** |
 | `verify` | Prove generated rows + schema carry no real PII from the seed Sample. Exit **8** (`PII_LEAK_DETECTED`), emits an Attestation. Use after `generate`/`extract` on a real-document seed. | **free** |
+| `run` | **One-shot pipeline.** One seed source — `--preset` / `--prompt` (free/paid) or `--document` (paid: extract→schema→generate→**verify**). Safe-by-default (ADR-0011): paid paths need `--yes` above the ~$0.10 cost gate; the document path fails closed (exit **8**, NOT cleared for sharing) if a real value leaked. | preset free; prompt/document paid |
 | `pii-audit FILE` | Re-scan a local text/HTML/MD file with Comprehend. | paid |
 | `estimate <path>` | **Pre-flight cost estimate** (offline, ±30-50%). `--for convert\|extract\|schema`. Use before any paid run >20 pages or with Opus. | free |
 | `ui` | Launch the demo web UI (requires `pip install 'pocsynth[ui]'`). | — |

@@ -122,3 +122,14 @@ class LeakDetectedError(DocSynthError):
 
     code = "PII_LEAK_DETECTED"
     exit_code = 8
+
+
+class CostGateError(DocSynthError):
+    """The one-shot `run` verb's code-enforced cost gate (ADR-0011) blocked a
+    paid run whose estimate exceeded the threshold without explicit confirmation.
+    Usage-family exit code (2); agents route on `code` and the `estimate` /
+    `threshold` in `context`, then re-run with `--yes` (or `--no-gate`).
+    """
+
+    code = "COST_GATE_BLOCKED"
+    exit_code = 2

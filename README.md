@@ -57,6 +57,11 @@ test     (free)  rows + schema ───► validation report (exit 7 if invalid
 **The cost story:** extract a schema from **one** real PDF (one or two paid Bedrock calls), then `generate` thousands of rows for **free**, offline, forever.
 
 ```bash
+# One-shot — the whole pipeline in a single command (safe-by-default):
+pocsynth run --preset crm_contacts --rows 1000 --seed 42 -o ./out   # free, instant
+pocsynth run --document report.pdf --rows 10000 --yes -o ./out      # paid; extract→schema→generate→verify, emits an Attestation
+
+# Or drive the stages by hand —
 # Fastest path — a bundled preset, zero AWS, instant:
 pocsynth presets                                            # 10 verticals: b2b_saas, crm_contacts, insurance_claims, security_telemetry, …
 pocsynth generate --preset crm_contacts --rows 1000 --seed 42 -o ./out
@@ -71,6 +76,7 @@ pocsynth estimate report.pdf --for extract                 # offline cost gate
 pocsynth extract report.pdf -o ./out                       # paid; PII-audited
 pocsynth schema --from-sample ./out/sample.json -o ./out   # paid; review ./out/schema.md
 pocsynth generate --schema ./out/schema.json --rows 10000  # free, unlimited
+pocsynth verify --rows ./out/rows.csv --sample ./out/sample.json --schema ./out/schema.json  # prove no real PII leaked
 ```
 
 **PII is structurally barred from synthetic output.** `extract` audits the values it pulls (Amazon Comprehend, on by default), and `schema --infer` never lets a real PII value become an `enum` — PII fields are bound to Faker providers and the real values are discarded. The **generated dataset is safe to share**; the extract sample and audit CSV are not.

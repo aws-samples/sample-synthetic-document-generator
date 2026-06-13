@@ -258,8 +258,47 @@ class TestVerifyCommand:
         assert result.exit_code == 8
 
 
+class TestRunCommand:
+    """F2 / ADR-0011: one-shot `run`. Free preset path + code-enforced cost gate."""
+
+    def test_preset_path_one_shot(self, tmp_path):
+        result = runner.invoke(app, [
+            "--json", "run", "--preset", "crm_contacts",
+            "--rows", "30", "--seed", "1", "-o", str(tmp_path)])
+        assert result.exit_code == 0, result.stderr
+        env = _stdout_json(result)
+        assert env["command"] == "run"
+        r = env["result"]
+        assert r["verdict"] == "not_applicable"  # synthetic by construction
+        assert r["cleared_for_sharing"] is True
+        assert r["output"]["rows_written"] == 30
+        assert r["cost"] is None  # free path
+        assert Path(r["output"]["rows_path"]).exists()
+
+    def test_requires_exactly_one_seed_source(self, tmp_path):
+        # Neither source.
+        r1 = runner.invoke(app, ["--json", "run", "--rows", "5", "-o", str(tmp_path)])
+        assert r1.exit_code == 2
+        assert _stdout_json(r1)["error"]["code"] == "SCHEMA_INVALID"
+        # Two sources.
+        r2 = runner.invoke(app, [
+            "--json", "run", "--preset", "b2b_saas",
+            "--prompt", "x", "-o", str(tmp_path)])
+        assert r2.exit_code == 2
+
+    def test_gate_flags_accepted(self, tmp_path):
+        # The safe-by-default flags parse and run on the free path (the gate's
+        # threshold logic itself is unit-tested in test_run.py). --no-gate is a
+        # no-op on a free preset and still succeeds.
+        result = runner.invoke(app, [
+            "--json", "run", "--preset", "b2b_saas", "--no-gate", "--yes",
+            "--rows", "5", "--seed", "1", "-o", str(tmp_path)])
+        assert result.exit_code == 0, result.stderr
+
+
 @pytest.mark.parametrize("cmd", [
     ["generate", "--help"], ["test", "--help"], ["verify", "--help"],
+    ["run", "--help"],
     ["schema", "--help"], ["presets", "--help"], ["estimate", "--help"],
 ])
 def test_structured_help_exits_zero(cmd):

@@ -788,6 +788,73 @@ def verify(
     _wrap(ctx, "verify", _go)
 
 
+# ---------- run (one-shot pipeline; safe-by-default, ADR-0011) ----------
+
+
+@app.command()
+def run(
+    ctx: typer.Context,
+    preset: Annotated[
+        str | None, typer.Option("--preset", help="Seed from a bundled preset (free).")
+    ] = None,
+    prompt: Annotated[
+        str | None, typer.Option("--prompt", help="Seed from a natural-language description (paid).")
+    ] = None,
+    document: Annotated[
+        str | None, typer.Option("--document", help="Seed from a real PDF (paid; extract→verify).")
+    ] = None,
+    rows: Annotated[int, typer.Option("--rows", help="Number of rows to generate.")] = 100,
+    fmt: Annotated[DataFormatChoice, typer.Option("--format", "-f")] = DataFormatChoice.csv,
+    seed: Annotated[int | None, typer.Option("--seed", help="Deterministic seed.")] = None,
+    locale: Annotated[str, typer.Option("--locale")] = "en_US",
+    model: Annotated[ModelChoice, typer.Option("--model")] = ModelChoice.sonnet,
+    pii_audit: Annotated[
+        bool, typer.Option("--pii-audit/--no-pii-audit", help="Audit extracted values (document path).")
+    ] = True,
+    assume_yes: Annotated[
+        bool, typer.Option("--yes", "-y", help="Confirm the cost gate on paid paths.")
+    ] = False,
+    gate: Annotated[
+        bool, typer.Option("--gate/--no-gate", help="Enforce the cost gate (ADR-0011).")
+    ] = True,
+    share_anyway: Annotated[
+        bool,
+        typer.Option("--share-anyway", help="Override a FAILED verify (deliberate + logged)."),
+    ] = False,
+    max_tokens: Annotated[int, typer.Option("--max-tokens")] = DEFAULT_MAX_TOKENS,
+    output_dir: Annotated[str | None, typer.Option("--output-dir", "-o")] = None,
+) -> None:
+    """One-shot pipeline: seed → schema → generate (→ verify for documents).
+
+    Exactly one seed source: --preset / --prompt / --document. Safe-by-default
+    (ADR-0011): paid paths require --yes above the cost gate; the document path
+    runs verify and exits 8 (NOT cleared for sharing) if a real value leaked.
+    """
+    from pocsynth.run import RunConfig, run_pipeline
+
+    stream = ctx.obj.get("stream", False)
+    json_mode = ctx.obj.get("json_mode", False)
+
+    def _go() -> dict[str, Any]:
+        def on_event(name: str, **payload):
+            if stream and json_mode:
+                emit_ndjson(ndjson_event(name, "run", **payload))
+
+        return run_pipeline(
+            RunConfig(
+                preset=preset, prompt=prompt, document=document,
+                rows=rows, export_format=fmt.value, seed=seed, locale=locale,
+                model_key=model.value, max_tokens=max_tokens, pii_audit=pii_audit,
+                assume_yes=assume_yes, gate=gate, share_anyway=share_anyway,
+                output_dir=output_dir,
+                region=ctx.obj.get("region"), profile=ctx.obj.get("profile"),
+            ),
+            on_event=on_event,
+        )
+
+    _wrap(ctx, "run", _go)
+
+
 # ---------- schema (lint mode here; infer/from-prompt added in Slice 2) ----------
 
 
