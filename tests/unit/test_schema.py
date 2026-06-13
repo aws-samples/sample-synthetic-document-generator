@@ -156,6 +156,22 @@ class TestWeights:
         assert by["b"] == {"x": 2, "y": 1}        # list → count 1 each, summed
         assert by["c"] == {}                       # unusable → empty, no crash
 
+    def test_merge_tolerates_malformed_field_elements(self):
+        # A `fields` list whose elements aren't dicts (None, a scalar) must be
+        # skipped, not crash on field.get(...). Regression for AttributeError.
+        merged = merge_observations([
+            {"fields": [None, 123, "oops",
+                        {"name": "state", "value_counts": {"CA": 3}}]},
+            {"fields": None},          # whole 'fields' is null
+            "not-a-page",              # whole page entry malformed
+        ])
+        by = {f["name"]: f["value_counts"] for f in merged}
+        assert by == {"state": {"CA": 3}}
+
+    def test_merge_empty_pages_returns_empty(self):
+        assert merge_observations([]) == []
+        assert merge_observations([{"fields": []}]) == []
+
 
 # ---------- lint + fix + doc ----------
 class TestLint:

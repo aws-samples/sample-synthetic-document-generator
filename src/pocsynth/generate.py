@@ -46,6 +46,10 @@ _RX_CLASS = {
     "S": "abcdefghijklmnopqrstuvwxyz0123456789",
 }
 _RX_ANY = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+# Universe for negated classes: alnum PLUS safe punctuation, so a fully-negated
+# alnum class like [^a-zA-Z0-9_] still has characters to draw from (and they are
+# actually outside the negated set, unlike _RX_ANY which IS the alnum set).
+_RX_NEG_UNIVERSE = _RX_ANY + "!#$%&*+,.:;=?@~- "
 
 
 def _resolve_groups(pattern: str, rng) -> str:
@@ -116,8 +120,8 @@ def _regexify(pattern: str, rng) -> str:
                     chars.append(body[m])
                     m += 1
             if neg:
-                allchars = set(_RX_ANY)
-                chars = sorted(allchars - set(chars)) or list(_RX_ANY)
+                excluded = set(chars)
+                chars = [c for c in _RX_NEG_UNIVERSE if c not in excluded] or list(_RX_ANY)
             # A class that resolved to nothing (shouldn't happen now) falls back
             # to the generic pool so generation never picks from an empty set.
             return ("".join(chars) or _RX_ANY), k + 1
@@ -183,6 +187,32 @@ class GenerateConfig:
     seed: int | None = None
     locale: str = "en_US"
     output_dir: str | None = None
+
+
+_EXPORT_FORMATS = ("csv", "json")
+
+
+def _validate_export_format(fmt: str) -> None:
+    if fmt not in _EXPORT_FORMATS:
+        raise SchemaError(
+            f"unsupported export format {fmt!r}",
+            context={"format": fmt, "valid": list(_EXPORT_FORMATS)},
+            hint=f"format must be one of: {', '.join(_EXPORT_FORMATS)}",
+        )
+
+
+def _build_faker(locale: str) -> Faker:
+    """Construct a Faker for `locale`, turning an invalid locale into a clean
+    SchemaError instead of letting Faker's AttributeError/UnsupportedFeature
+    bubble out at generation time."""
+    try:
+        return Faker(locale)
+    except (AttributeError, ValueError, ModuleNotFoundError, TypeError) as exc:
+        raise SchemaError(
+            f"unsupported locale {locale!r}: {exc}",
+            context={"locale": locale},
+            hint="Use a Faker locale such as en_US, en_GB, de_DE, ja_JP",
+        ) from exc
 
 
 @lru_cache(maxsize=8)
@@ -258,6 +288,13 @@ def _resolve_field_generators(
                          "or pick a valid Faker provider",
                 )
             args = field.get("faker_args", {}) or {}
+            if not isinstance(args, dict):
+                raise SchemaError(
+                    f"field {name!r}: faker_args must be an object, got {type(args).__name__}",
+                    context={"field": name, "faker_args_type": type(args).__name__},
+                    hint="faker_args is keyword arguments for the Faker provider, e.g. "
+                         '{"min_value": 0, "max_value": 100}',
+                )
             resolved.append((name, ftype, _faker_generator(getattr(fake, faker_name), args)))
             continue
 
@@ -283,8 +320,9 @@ def run_generation(cfg: GenerateConfig, on_event: EventCallback = None) -> dict[
     schema_mod._validate_schema_shape(cfg.schema)
     if cfg.rows < 0:
         raise SchemaError("rows must be >= 0", context={"rows": cfg.rows})
+    _validate_export_format(cfg.export_format)
 
-    fake = Faker(cfg.locale)
+    fake = _build_faker(cfg.locale)
     if cfg.seed is not None:
         fake.seed_instance(cfg.seed)
 
@@ -362,8 +400,9 @@ def stream_rows(
     schema_mod._validate_schema_shape(schema)
     if rows < 0:
         raise SchemaError("rows must be >= 0", context={"rows": rows})
+    _validate_export_format(export_format)
 
-    fake = Faker(locale)
+    fake = _build_faker(locale)
     if seed is not None:
         fake.seed_instance(seed)
     generators = _resolve_field_generators(schema, fake)

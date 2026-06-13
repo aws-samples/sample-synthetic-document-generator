@@ -145,3 +145,88 @@ class TestStreamRows:
         run_generation(GenerateConfig(schema=s, rows=100, seed=42, output_dir=str(tmp_path)))
         batch = (Path(tmp_path) / "rows.csv").read_text()
         assert streamed.strip() == batch.strip()
+
+
+class TestMalformedInputRaisesSchemaError:
+    """Bad config / schema must surface as a clean SchemaError up front, not a
+    TypeError / Faker exception deep inside row generation."""
+
+    def test_faker_args_not_a_dict(self, tmp_path):
+        s = _schema([{"name": "x", "type": "string", "faker": "word",
+                      "faker_args": "not-a-dict"}])
+        with pytest.raises(SchemaError):
+            run_generation(GenerateConfig(schema=s, rows=1, output_dir=str(tmp_path)))
+
+    def test_invalid_export_format_run_generation(self, tmp_path):
+        s = _schema([{"name": "x", "type": "string", "faker": "word"}])
+        with pytest.raises(SchemaError):
+            run_generation(GenerateConfig(schema=s, rows=1, export_format="xml",
+                                          output_dir=str(tmp_path)))
+
+    def test_invalid_export_format_stream_rows(self):
+        s = _schema([{"name": "x", "type": "string", "faker": "word"}])
+        with pytest.raises(SchemaError):
+            list(stream_rows(s, 1, export_format="xml"))
+
+    def test_invalid_locale_run_generation(self, tmp_path):
+        s = _schema([{"name": "x", "type": "string", "faker": "word"}])
+        with pytest.raises(SchemaError):
+            run_generation(GenerateConfig(schema=s, rows=1, locale="not_a_locale",
+                                          output_dir=str(tmp_path)))
+
+    def test_invalid_locale_stream_rows(self):
+        s = _schema([{"name": "x", "type": "string", "faker": "word"}])
+        with pytest.raises(SchemaError):
+            list(stream_rows(s, 1, locale="not_a_locale"))
+
+    def test_negative_rows_rejected(self, tmp_path):
+        s = _schema([{"name": "x", "type": "string", "faker": "word"}])
+        with pytest.raises(SchemaError):
+            run_generation(GenerateConfig(schema=s, rows=-1, output_dir=str(tmp_path)))
+
+
+class TestZeroRows:
+    """rows=0 is valid: a header-only CSV / empty JSON array, no crash."""
+
+    def test_zero_rows_csv_header_only(self, tmp_path):
+        s = _schema([{"name": "a", "type": "integer", "faker": "random_int"}])
+        res = run_generation(GenerateConfig(schema=s, rows=0, output_dir=str(tmp_path)))
+        assert res["output"]["rows_written"] == 0
+        lines = [ln for ln in Path(res["output"]["rows_path"]).read_text().splitlines() if ln.strip()]
+        assert lines == ["a"]  # header only
+
+    def test_zero_rows_json_empty_array(self):
+        s = _schema([{"name": "a", "type": "integer", "faker": "random_int"}])
+        text = "".join(stream_rows(s, 0, export_format="json"))
+        assert json.loads(text) == []
+
+
+class TestRegexGenerationEdgeCases:
+    """_regexify must never crash on patterns that stdlib re accepts."""
+
+    @pytest.mark.parametrize("pattern", [
+        "[^a-zA-Z0-9_]{3}",     # negated near-full class
+        "^[0-9]{3}$",           # anchored
+        "(cat|dog|bird)-[0-9]{2}",  # alternation group
+        r"\d{3}-\d{4}",          # escapes
+        "[A-Z]{2}[0-9]{0,3}",   # zero-or-more bounded
+    ])
+    def test_regex_patterns_generate_and_self_validate(self, tmp_path, pattern):
+        from pocsynth.validate import ValidateConfig, run_validation
+        s = _schema([{"name": "code", "type": "string", "regex": pattern}])
+        gen = run_generation(GenerateConfig(schema=s, rows=25, seed=7, output_dir=str(tmp_path)))
+        # Generated values must validate against their own pattern.
+        res = run_validation(ValidateConfig(rows_path=gen["output"]["rows_path"], schema=s))
+        assert res["valid"] is True, res["violations"][:3]
+
+
+class TestWeightedEnumDistribution:
+    """A 90/10 weighting must skew the sample, not come out ~uniform."""
+
+    def test_weights_skew_distribution(self, tmp_path):
+        s = _schema([{"name": "tier", "type": "string", "enum": ["A", "B"],
+                      "weights": {"A": 0.9, "B": 0.1}}])
+        res = run_generation(GenerateConfig(schema=s, rows=1000, seed=5, output_dir=str(tmp_path)))
+        rows = _read_csv(res["output"]["rows_path"])
+        a_frac = sum(1 for r in rows if r["tier"] == "A") / len(rows)
+        assert a_frac > 0.8, f"expected ~0.9 A, got {a_frac}"

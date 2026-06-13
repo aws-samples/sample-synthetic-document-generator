@@ -8,6 +8,7 @@ import csv
 
 import pytest
 
+from pocsynth.errors import SchemaError
 from pocsynth.generate import GenerateConfig, run_generation
 from pocsynth.validate import ValidateConfig, run_validation
 
@@ -103,3 +104,52 @@ class TestRoundTrip:
         res = run_validation(ValidateConfig(rows_path=gen["output"]["rows_path"], schema=s))
         assert res["valid"] is True, res["violations"][:3]
         assert res["rows_checked"] == 100
+
+
+class TestMalformedRowsInput:
+    """Malformed rows files must raise a clean SchemaError, never a bare
+    JSONDecodeError / AttributeError that leaks the internal failure."""
+
+    def test_malformed_json_raises_schema_error(self, tmp_path):
+        p = tmp_path / "rows.json"
+        p.write_text("{ this is not valid json", encoding="utf-8")
+        s = _schema([{"name": "x", "type": "string"}])
+        with pytest.raises(SchemaError):
+            run_validation(ValidateConfig(rows_path=str(p), schema=s))
+
+    def test_json_not_a_list_raises_schema_error(self, tmp_path):
+        p = tmp_path / "rows.json"
+        p.write_text('{"x": 1}', encoding="utf-8")  # an object, not a list
+        s = _schema([{"name": "x", "type": "integer"}])
+        with pytest.raises(SchemaError):
+            run_validation(ValidateConfig(rows_path=str(p), schema=s))
+
+    def test_json_list_of_scalars_raises_schema_error(self, tmp_path):
+        # Regression: row.get(name) would AttributeError on an int element.
+        p = tmp_path / "rows.json"
+        p.write_text("[1, 2, 3]", encoding="utf-8")
+        s = _schema([{"name": "x", "type": "integer"}])
+        with pytest.raises(SchemaError):
+            run_validation(ValidateConfig(rows_path=str(p), schema=s))
+
+    def test_missing_rows_file_raises_schema_error(self, tmp_path):
+        s = _schema([{"name": "x", "type": "string"}])
+        with pytest.raises(SchemaError):
+            run_validation(ValidateConfig(rows_path=str(tmp_path / "nope.csv"), schema=s))
+
+    def test_csv_missing_schema_column_treated_as_null(self, tmp_path):
+        # A CSV whose header omits a schema field: the column reads as null,
+        # which is permitted (v1 fields are nullable). Documents the behavior.
+        s = _schema([{"name": "a", "type": "integer"}, {"name": "b", "type": "string"}])
+        p = tmp_path / "rows.csv"
+        _write_csv(p, ["a"], [{"a": "1"}, {"a": "2"}])  # no 'b' column
+        res = run_validation(ValidateConfig(rows_path=str(p), schema=s))
+        assert res["valid"] is True
+        assert res["rows_checked"] == 2
+
+    def test_csv_extra_column_ignored(self, tmp_path):
+        s = _schema([{"name": "a", "type": "integer"}])
+        p = tmp_path / "rows.csv"
+        _write_csv(p, ["a", "extra"], [{"a": "1", "extra": "ignored"}])
+        res = run_validation(ValidateConfig(rows_path=str(p), schema=s))
+        assert res["valid"] is True

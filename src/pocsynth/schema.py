@@ -228,7 +228,12 @@ def merge_observations(per_page: list[dict], cap: int = MAX_EXAMPLES_PER_FIELD) 
     """
     merged: "OrderedDict[str, dict]" = OrderedDict()
     for page in per_page:
-        for field in page.get("fields", []):
+        fields = page.get("fields") if isinstance(page, dict) else None
+        for field in fields or []:
+            # `fields` is model-controlled; a malformed element (None, a scalar,
+            # a list) must be skipped, not crash the merge.
+            if not isinstance(field, dict):
+                continue
             name = field.get("name")
             if not name:
                 continue

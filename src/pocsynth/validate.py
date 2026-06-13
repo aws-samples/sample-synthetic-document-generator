@@ -40,9 +40,20 @@ def _load_rows(path: Path, in_format: str | None) -> list[dict[str, Any]]:
     if not path.exists():
         raise SchemaError(f"rows file not found: {path}", context={"path": str(path)})
     if fmt == "json":
-        data = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise SchemaError(
+                f"rows file is not valid JSON: {exc}",
+                context={"path": str(path), "json_error": str(exc)},
+            ) from exc
         if not isinstance(data, list):
             raise SchemaError("JSON rows file must be a list of objects")
+        if not all(isinstance(row, dict) for row in data):
+            raise SchemaError(
+                "JSON rows file must be a list of objects (got a non-object element)",
+                context={"path": str(path)},
+            )
         return data
     with open(path, newline="", encoding="utf-8") as fh:
         return list(csv.DictReader(fh))
