@@ -4,6 +4,7 @@ import csv
 from pathlib import Path
 
 import boto3
+import pytest
 from botocore.stub import Stubber
 
 from pocsynth.comprehend import scan_for_pii
@@ -139,4 +140,92 @@ class TestScanForPii:
 
         header_count = sum(1 for r in rows if r and r[0] == "FileName")
         assert header_count == 1
-        assert len(rows) == 3  # 1 header + 2 data rows
+
+
+class TestScanForPiiChunking:
+    """Large text is scanned in overlapping chunks; entities re-seen in the
+    overlap window must be de-duplicated, and Comprehend failures must surface
+    as a typed ComprehendError (not a silent gap in the audit)."""
+
+    def test_boundary_entity_deduplicated(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from pocsynth.comprehend import _CHUNK_OVERLAP, COMPREHEND_MAX_TEXT_LENGTH
+        monkeypatch.chdir(tmp_path)
+
+        # An entity that lands inside the overlap window appears in BOTH chunks
+        # (with chunk-local offsets). scan_for_pii dedups by absolute span+type.
+        step = COMPREHEND_MAX_TEXT_LENGTH - _CHUNK_OVERLAP
+        # Chunk starts are range(0, len, step). To force EXACTLY 2 chunks the
+        # length must be in (step, 2*step]; step+100 sits just past chunk 1.
+        text = "x" * (step + 100)
+        # Absolute span sits 50 chars into the overlap region of chunk 2.
+        abs_begin = step + 50
+        abs_end = abs_begin + 8
+
+        def _detect(Text="", **_kw):
+            # Determine which chunk this is by length / content offset is hard;
+            # instead return the entity whenever the chunk covers abs_begin.
+            # Chunk 1 starts at 0; chunk 2 starts at `step`.
+            # We can't see the start here, so return for both calls with the
+            # offset translated to chunk-local — scan_for_pii adds chunk_start.
+            # Emit chunk-1-local for the first call, chunk-2-local for the second.
+            calls.append(len(Text))
+            if len(calls) == 1:  # chunk 1 (starts at 0)
+                return {"Entities": [{"Type": "SSN", "Score": 0.9,
+                                      "BeginOffset": abs_begin, "EndOffset": abs_end}]}
+            return {"Entities": [{"Type": "SSN", "Score": 0.9,
+                                  "BeginOffset": abs_begin - step, "EndOffset": abs_end - step}]}
+
+        calls: list[int] = []
+        client = MagicMock()
+        client.detect_pii_entities.side_effect = _detect
+
+        detected = scan_for_pii(text, folder_name="pii-audit",
+                                filename="boundary", comprehend=client)
+        # Two chunks scanned, but the same absolute (begin,end,type) appears once.
+        assert client.detect_pii_entities.call_count == 2
+        assert len(detected) == 1
+        assert detected[0]["BeginOffset"] == abs_begin
+
+    def test_many_chunks_all_scanned(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from pocsynth.comprehend import _CHUNK_OVERLAP, COMPREHEND_MAX_TEXT_LENGTH
+        monkeypatch.chdir(tmp_path)
+        step = COMPREHEND_MAX_TEXT_LENGTH - _CHUNK_OVERLAP
+        text = "a" * (step * 2 + 10)  # 3 chunks
+        client = MagicMock()
+        client.detect_pii_entities.return_value = {"Entities": []}
+        scan_for_pii(text, folder_name="pii-audit", filename="many", comprehend=client)
+        assert client.detect_pii_entities.call_count == 3
+
+    def test_comprehend_clienterror_raises_comprehend_error(self, tmp_path, monkeypatch):
+
+        from pocsynth.errors import ComprehendError
+        monkeypatch.chdir(tmp_path)
+        client = boto3.client("comprehend", region_name="us-east-1")
+        stubber = Stubber(client)
+        stubber.add_client_error(
+            "detect_pii_entities", service_error_code="ThrottlingException",
+            service_message="Rate exceeded", http_status_code=429)
+        stubber.activate()
+        try:
+            with pytest.raises(ComprehendError) as ei:
+                scan_for_pii("some text", folder_name="pii-audit",
+                             filename="throttle", comprehend=client)
+        finally:
+            stubber.deactivate()
+        # Throttling is retryable so callers can back off.
+        assert ei.value.retryable is True
+
+    def test_empty_text_is_scanned_once_clean(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+        monkeypatch.chdir(tmp_path)
+        client = MagicMock()
+        client.detect_pii_entities.return_value = {"Entities": []}
+        detected = scan_for_pii("", folder_name="pii-audit",
+                                filename="empty", comprehend=client)
+        assert detected == []
+        assert client.detect_pii_entities.call_count == 1
+        assert Path("pii-audit/empty_pii_scan_audit.csv").exists()

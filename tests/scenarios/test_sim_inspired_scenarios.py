@@ -334,3 +334,67 @@ class TestS4_ClickstreamInstrumentation:
         val = run_validation(ValidateConfig(
             rows_path=gen["output"]["rows_path"], schema=schema))
         assert val["valid"] is True, val["violations"][:3]
+
+
+class TestS5_GovernanceAuditCorpus:
+    """Internal governance/compliance: a periodic engagement-audit corpus whose
+    distributions match a real-world audit report — heavily skewed resolver
+    groups, a status enum, an age-in-days numeric range, and a regex ticket id.
+    Inspired by a CDE pilot audit (anonymized: generic regions, no people).
+
+    This is the highest-fidelity structured archetype: it exercises non-uniform
+    weighted enums at a realistic skew (one region owns ~75% of rows) AND a
+    second weighted enum, then validates the whole corpus."""
+
+    def test_skewed_governance_corpus_generates_and_validates(self, tmp_path):
+        # Region mix mirrors an audit's 39/7/4/2 split across four regions.
+        schema = {"schema": 1, "name": "engagement_audit", "fields": [
+            {"name": "ticket_id", "type": "string", "regex": "[0-9a-f]{8}"},
+            {"name": "region", "type": "string",
+             "enum": ["region_a", "region_b", "region_c", "region_d"],
+             "weights": {"region_a": 0.76, "region_b": 0.14,
+                         "region_c": 0.08, "region_d": 0.02}},
+            {"name": "status", "type": "string",
+             "enum": ["work_in_progress", "assigned", "pending"],
+             "weights": {"work_in_progress": 0.6, "assigned": 0.25, "pending": 0.15}},
+            {"name": "age_days", "type": "integer", "faker": "random_int",
+             "faker_args": {"min": 1, "max": 120}},
+            {"name": "production_access", "type": "boolean", "faker": "boolean"},
+        ]}
+        gen = run_generation(GenerateConfig(
+            schema=schema, rows=3000, seed=13, export_format="csv",
+            output_dir=str(tmp_path)))
+        rows = _read_csv(gen["output"]["rows_path"])
+        assert len(rows) == 3000
+
+        # The dominant region holds its ~76% skew; the rarest stays scarce.
+        region_share = {r: sum(1 for x in rows if x["region"] == r) / len(rows)
+                        for r in ("region_a", "region_b", "region_c", "region_d")}
+        assert region_share["region_a"] > 0.68
+        assert region_share["region_d"] < 0.06
+        assert region_share["region_a"] > region_share["region_b"] > region_share["region_d"]
+
+        # age_days respects the declared bounds.
+        ages = [int(r["age_days"]) for r in rows]
+        assert min(ages) >= 1 and max(ages) <= 120
+
+        val = run_validation(ValidateConfig(
+            rows_path=gen["output"]["rows_path"], schema=schema))
+        assert val["valid"] is True, val["violations"][:3]
+
+    def test_multilabel_flag_field_via_regex(self, tmp_path):
+        # The audit's "Key Flags" column is a comma-separated multi-label set.
+        # A regex field models a constrained 1-3 flag combination deterministically.
+        schema = {"schema": 1, "name": "flagged", "fields": [
+            {"name": "ticket_id", "type": "string", "regex": "T-[0-9]{6}"},
+            {"name": "flags", "type": "string",
+             "regex": "(AGING_60|AGING_90|UNASSIGNED|MISSING_SCOPE)"},
+        ]}
+        gen = run_generation(GenerateConfig(
+            schema=schema, rows=200, seed=8, output_dir=str(tmp_path)))
+        rows = _read_csv(gen["output"]["rows_path"])
+        allowed = {"AGING_60", "AGING_90", "UNASSIGNED", "MISSING_SCOPE"}
+        assert all(r["flags"] in allowed for r in rows)
+        val = run_validation(ValidateConfig(
+            rows_path=gen["output"]["rows_path"], schema=schema))
+        assert val["valid"] is True, val["violations"][:3]
