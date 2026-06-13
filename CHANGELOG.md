@@ -5,6 +5,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — secure-prototyping: safety verification (F1)
+- **`verify --rows --sample [--schema]`** — offline, free affirmative proof that a generated dataset carries **no real source PII**. Answers the question the PII guard (ADR-0005) could only *design for*: it scans the generated **Rows** *and* the shared **Schema** artifact (enum values, regex patterns, descriptions) against the real Comprehend-flagged values recorded in the originating extract **Sample**, by exact whole-value match. Non-PII real values (state codes, plan tiers) are allowed to survive as enums by design. **Fail-closed:** exit **8** (`PII_LEAK_DETECTED`) if any real value leaked — the dataset is written but NOT cleared for sharing (ADR-0010). A `not_applicable` verdict covers public-data seeds and hand-authored schemas with no real source.
+- **Attestation** (`attestation.json`, `-o`) — a hashable verdict record: `verdict`, `tool_version`, `source_hash`, `rows_sha256`, and any leaks with **masked** previews (the attestation never re-leaks the value it reports). Rides in the error context on failure so CI / agents can gate on it.
+- **`LeakDetectedError`** (exit 8) added to the error taxonomy; `src/pocsynth/verify.py` new module. **Tests (+13):** `tests/unit/test_verify.py` (verdicts, schema/regex leak detection, masking, conform path) + CLI fail-closed exit-8 contract in `test_cli_structured.py`.
+
 ### Added — structured-data pipeline (extract → schema → generate → test)
 - **Four new CLI commands** turning `pocsynth` into a synthetic *tabular data* generator alongside document synthesis:
   - **`generate --schema|--preset --rows --seed --format csv|json`** — offline Faker generation. Deterministic with `--seed`, typed serialization (ISO-8601 dates in both CSV and JSON), weighted `enum` distributions, and fail-fast on unknown Faker providers. Free; touches no AWS.

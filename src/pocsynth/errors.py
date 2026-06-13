@@ -111,3 +111,14 @@ class DataInvalidError(DocSynthError):
 
     code = "DATA_INVALID"
     exit_code = 7
+
+
+class LeakDetectedError(DocSynthError):
+    """`verify` found a real source PII value leaked into the generated Rows or
+    the Schema artifact (ADR-0010). Fail-closed: distinct exit code so CI /
+    agents / the one-shot `run` gate can refuse to clear the output for sharing.
+    The full Attestation rides in `context.attestation`.
+    """
+
+    code = "PII_LEAK_DETECTED"
+    exit_code = 8

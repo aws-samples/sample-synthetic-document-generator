@@ -210,8 +210,56 @@ class TestGenerateStream:
         assert _norm(ns_env) == _norm(complete)
 
 
+class TestVerifyCommand:
+    """F1 / ADR-0010: verify is fail-closed (exit 8) on a real-value leak."""
+
+    def _sample(self, tmp_path):
+        p = tmp_path / "sample.json"
+        p.write_text(json.dumps({"schema": 1, "source": "intake.pdf", "fields": [
+            {"name": "ssn", "pii": True, "value_counts": {"555-22-7788": 1}}]}))
+        return p
+
+    def test_clean_rows_pass_exit_0(self, tmp_path):
+        sample = self._sample(tmp_path)
+        rows = tmp_path / "rows.csv"
+        rows.write_text("ssn\n111-00-0000\n")
+        result = runner.invoke(app, [
+            "--json", "verify", "--rows", str(rows), "--sample", str(sample),
+            "-o", str(tmp_path)])
+        assert result.exit_code == 0, result.stderr
+        env = _stdout_json(result)
+        assert env["command"] == "verify"
+        assert env["result"]["verdict"] == "pass"
+        assert (tmp_path / "attestation.json").exists()
+
+    def test_leak_fails_closed_exit_8(self, tmp_path):
+        sample = self._sample(tmp_path)
+        rows = tmp_path / "rows.csv"
+        rows.write_text("ssn\n555-22-7788\n")  # real value leaked
+        result = runner.invoke(app, [
+            "--json", "verify", "--rows", str(rows), "--sample", str(sample)])
+        assert result.exit_code == 8
+        env = _stdout_json(result)
+        assert env["error"]["code"] == "PII_LEAK_DETECTED"
+        # the attestation rides in the error context, masked
+        assert env["error"]["context"]["attestation"]["verdict"] == "fail"
+        assert "555-22-7788" not in result.stdout
+
+    def test_schema_leak_detected(self, tmp_path):
+        sample = self._sample(tmp_path)
+        rows = tmp_path / "rows.csv"
+        rows.write_text("ssn\n111-00-0000\n")  # rows clean
+        schema = tmp_path / "schema.json"
+        schema.write_text(json.dumps({"schema": 1, "name": "t", "fields": [
+            {"name": "ssn", "type": "string", "enum": ["555-22-7788"]}]}))  # leak in schema
+        result = runner.invoke(app, [
+            "--json", "verify", "--rows", str(rows), "--sample", str(sample),
+            "--schema", str(schema)])
+        assert result.exit_code == 8
+
+
 @pytest.mark.parametrize("cmd", [
-    ["generate", "--help"], ["test", "--help"],
+    ["generate", "--help"], ["test", "--help"], ["verify", "--help"],
     ["schema", "--help"], ["presets", "--help"], ["estimate", "--help"],
 ])
 def test_structured_help_exits_zero(cmd):

@@ -32,6 +32,7 @@ from pocsynth.errors import (
     DataInvalidError,
     DocSynthError,
     InputError,
+    LeakDetectedError,
     SchemaError,
 )
 from pocsynth.output import emit, emit_ndjson, envelope, error_envelope, ndjson_event
@@ -738,6 +739,53 @@ def test_cmd(
         return result
 
     _wrap(ctx, "test", _go)
+
+
+# ---------- verify (free, offline PII-leak attestation) ----------
+
+
+@app.command()
+def verify(
+    ctx: typer.Context,
+    rows: Annotated[str, typer.Option("--rows", help="Generated rows (CSV/JSON) to verify.")],
+    sample: Annotated[str, typer.Option("--sample", help="Originating extract Sample (real values).")],
+    schema: Annotated[
+        str | None,
+        typer.Option("--schema", help="Schema artifact to also scan for leaked PII (recommended)."),
+    ] = None,
+    in_format: Annotated[
+        DataFormatChoice | None, typer.Option("--in-format")
+    ] = None,
+    output_dir: Annotated[str | None, typer.Option("--output-dir", "-o")] = None,
+) -> None:
+    """Verify generated rows + schema carry no real PII from the sample (offline).
+
+    Emits an Attestation. Fail-closed: exit 8 if a real value leaked (ADR-0010).
+    """
+    from pocsynth.schema import load_schema
+    from pocsynth.verify import VerifyConfig, run_verify
+
+    def _go() -> dict[str, Any]:
+        schema_dict = load_schema(schema) if schema else None
+        result = run_verify(
+            VerifyConfig(
+                rows_path=rows, sample_path=sample, schema=schema_dict,
+                rows_in_format=in_format.value if in_format else None,
+                output_dir=output_dir,
+            )
+        )
+        if result["verdict"] == "fail":
+            leaks = result["attestation"]["leaks"]
+            raise LeakDetectedError(
+                f"{len(leaks)} real source value(s) leaked into the generated output "
+                "— NOT cleared for sharing",
+                context={"attestation": result["attestation"]},
+                hint="Inspect result.context.attestation.leaks; re-run schema --fix "
+                     "or regenerate. Do not share this dataset.",
+            )
+        return result
+
+    _wrap(ctx, "verify", _go)
 
 
 # ---------- schema (lint mode here; infer/from-prompt added in Slice 2) ----------
