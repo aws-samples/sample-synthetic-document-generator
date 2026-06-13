@@ -29,6 +29,12 @@ Produces synthetic **Rows** from a **Schema**, offline and free, via Faker.
 Validates **Rows** against a **Schema**, offline and free. Emits a **Validation report**.
 _Avoid_: "validate" as a command name — the command is `test`; "validation" names its output.
 
+**Verify**:
+Checks **Rows** (and the **Schema** artifact) against the real source values in a **Sample** for
+PII leakage, offline and free. Emits an **Attestation** (pass/fail). A distinct subject from **Test**
+(rules vs. real-value leakage); in the UI it auto-runs after a document-seeded generate.
+_Avoid_: folding into **Test** — they check different things.
+
 ### Artifacts
 **Schema** (the artifact):
 The JSON spine of the pipeline (`schema: 1`, a list of typed **Fields**). Produced by Schema,
@@ -55,6 +61,24 @@ Merged across pages by field name.
 Lint report = Schema's findings about a Schema (issues, recommendations, fixes). Validation report =
 Test's findings about Rows (violations). Different stages, different subjects.
 
+### Personas
+Personas are split by **trust boundary** (where the tool runs and whose data seeds it), not by
+job title — that split drives what each one needs.
+
+**SA** (Solutions Architect, sandbox):
+Runs pocsynth in an AWS sandbox/Isengard account to build or demo a prototype. Seeds only from a
+**Preset** or a **Prompt** — never real customer data (real data in a non-prod account is a
+reportable security incident). Optimizes for speed, believability, cost control, and a
+safe-to-share artifact.
+_Avoid_: "internal user". A **Customer-runner** is not an SA even when they're an Amazon engineer.
+
+**Customer-runner** (own account):
+A customer engineer — or an SA working inside the customer's own account/VDI — who runs pocsynth
+where real documents (leases, claims, grants) *may* be used as seeds because the data never leaves
+the customer's trust boundary. Optimizes for a trivially-provable PII-never-leaks guarantee and
+self-service simplicity. Subsumes the pure self-service customer (same needs, no SA present).
+_Avoid_: "customer" alone (ambiguous: the runner vs. the end customer of the demo).
+
 ### Modes & qualities
 **Discovery vs. Conform** (Extract modes):
 Discovery = no schema yet, generic tool, emits observations. Conform = a schema is supplied, emits
@@ -74,6 +98,27 @@ carry real-value enums (ADR-0005).
 **Paid half vs. free half**:
 Paid = Extract + Schema-infer (Bedrock, run once). Free = Generate + Test + Schema-lint (offline,
 unlimited). The economic spine of the pipeline.
+
+**Safety verification** (the affirmative non-leak check):
+An offline check that scans the generated **Rows** for any real source value seen in the **Sample**
+and returns a pass/fail. Turns "designed not to leak" into "checked this output, it didn't." The
+**Customer-runner** needs this (real data was involved); for the **SA** it's reassurance only.
+_Avoid_: conflating with **Test** — Test checks rows against the Schema's rules; Safety verification
+checks rows against the *real source values* for leakage. Different subjects.
+
+**Attestation** (the safety report artifact):
+A structured, hashable record of a Safety verification — source-doc hash, rows hash, verdict, tool
+version — that a Customer-runner can attach to a security review. The persistable output of Safety
+verification.
+
+**One-shot run** (the unifying orchestration verb):
+A single command that chains the whole pipeline to a dataset so a persona never threads artifacts.
+Two seed sources, one verb:
+- prompt/preset seed → schema → generate (free; the **SA**'s fast path).
+- document seed → extract → schema → generate → **verify** (paid; the **Customer-runner**'s path,
+  with **Attestation** emitted and the cost gate shown before spend).
+_Avoid_: treating "quickstart" (prompt/preset) and "fromdoc" (document) as two features — they are
+one verb differing only by seed source.
 
 ## Relationships
 
