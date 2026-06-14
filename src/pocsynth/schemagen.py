@@ -96,6 +96,52 @@ def _converse_for_schema(cfg: SchemaConfig, prompt: str) -> tuple[dict, dict]:
     return draft, usage
 
 
+# Type → safe fallback Faker provider when the model proposes an invalid one.
+_FALLBACK_BY_TYPE = {
+    "string": "word",
+    "integer": "random_int",
+    "number": "pyfloat",
+    "boolean": "boolean",
+    "date": "date_object",
+    "datetime": "date_time",
+}
+
+
+def _sanitize_providers(schema: dict) -> list[dict]:
+    """Coerce model-proposed `faker` values that aren't real bare providers to a
+    type-appropriate fallback, so a recoverable model quirk (a hallucinated
+    `book.title`, a dotted/namespaced name, or a call expression like
+    `bothify(...)`) never hard-fails generation. Returns lint-style notes.
+
+    Fields already bound by `enum`/`regex` keep those (they win in generation);
+    only a leftover invalid `faker` on such a field is dropped.
+    """
+    from pocsynth.generate import valid_faker_providers
+
+    valid = valid_faker_providers()
+    notes: list[dict] = []
+    for f in schema.get("fields", []):
+        faker = f.get("faker")
+        if not faker or faker in valid:
+            continue
+        if f.get("enum") or f.get("regex"):
+            # enum/regex already drives this field; just drop the bad faker.
+            f.pop("faker", None)
+            fixed_to = "enum" if f.get("enum") else "regex"
+        else:
+            fixed_to = _FALLBACK_BY_TYPE.get(f.get("type", "string"), "word")
+            f["faker"] = fixed_to
+        notes.append({
+            "field": f["name"], "issue": "invalid_faker_provider_coerced",
+            "severity": "warning",
+            "recommendation": (
+                f"{faker!r} is not a valid Faker provider; "
+                f"using {fixed_to} so generation stays deterministic and offline"
+            ),
+        })
+    return notes
+
+
 def _apply_pii_guard(schema: dict, sample_pii: set[str]) -> list[dict]:
     """Strip real-value enums from PII fields (ADR-0005). Returns lint notes."""
     notes: list[dict] = []
@@ -182,10 +228,14 @@ def run_schema(cfg: SchemaConfig, on_event: EventCallback = None) -> dict[str, A
         )
         schema_mod._validate_schema_shape(schema)
 
-    # ----- PII guard + distribution (paid modes only) -----
+    # ----- sanitize + PII guard + distribution (paid modes only) -----
     pii_notes: list[dict] = []
+    provider_notes: list[dict] = []
     per_field_source: dict[str, str] = {}
     if mode in ("infer", "from_prompt"):
+        # Coerce invalid model-proposed providers FIRST so the paid call never
+        # hard-fails on a recoverable quirk (e.g. a hallucinated `book.title`).
+        provider_notes = _sanitize_providers(schema)
         pii_notes = _apply_pii_guard(schema, sample_pii)
         dist_mode = cfg.distribution
         # from_prompt has no counts → infer/auto degrade to synthetic.
@@ -193,7 +243,7 @@ def run_schema(cfg: SchemaConfig, on_event: EventCallback = None) -> dict[str, A
 
     # ----- lint + (optional) fix -----
     lint = lint_schema(schema)
-    lint_all = lint + pii_notes
+    lint_all = lint + provider_notes + pii_notes
     fixed_schema_path = None
     applied_changes: list[dict] = []
     out_schema = schema

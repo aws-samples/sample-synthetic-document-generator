@@ -81,6 +81,39 @@ class TestInferMode:
         assert f.get("faker")
 
 
+class TestProviderSanitization:
+    def test_invalid_model_provider_coerced_not_fatal(self, tmp_path):
+        # Bedrock proposes a hallucinated/namespaced provider and a call
+        # expression. run_schema must coerce them so generation never hard-fails
+        # (exit 2 SCHEMA_INVALID) on a recoverable model quirk.
+        from pocsynth.generate import (
+            GenerateConfig,
+            run_generation,
+            valid_faker_providers,
+        )
+
+        client = _emit_schema_client([
+            {"name": "title", "type": "string", "faker": "book.title"},
+            {"name": "variety", "type": "string", "faker": "bothify(text='??-##')"},
+            {"name": "owner", "type": "string", "faker": "name"},  # valid, untouched
+        ])
+        res = run_schema(SchemaConfig(prompt="a library catalog",
+                                      output_dir=str(tmp_path / "o"), bedrock_client=client))
+        schema = json.loads(Path(res["output"]["schema_path"]).read_text())
+        by = {f["name"]: f for f in schema["fields"]}
+        valid = valid_faker_providers()
+        # Every emitted faker is now a real provider.
+        assert all(f["faker"] in valid for f in schema["fields"] if f.get("faker"))
+        assert by["owner"]["faker"] == "name"  # valid one left alone
+        # The coercion is reported.
+        notes = res["lint"]["notes"]
+        assert any(n["issue"] == "invalid_faker_provider_coerced" for n in notes)
+        # And generation actually succeeds end-to-end.
+        gen = run_generation(GenerateConfig(schema=schema, rows=10, seed=1,
+                                            output_dir=str(tmp_path / "g")))
+        assert gen["output"]["rows_written"] == 10
+
+
 class TestFromPromptMode:
     def test_from_prompt_no_counts_downgrades_infer(self, tmp_path):
         client = _emit_schema_client([
