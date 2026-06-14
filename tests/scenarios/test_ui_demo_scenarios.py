@@ -324,6 +324,10 @@ class TestCommandPanel:
         # actually invoke the skill — NOT the underlying ./pocsynth.py command.
         assert "/pocsynth generate" in t
         assert "./pocsynth.py" not in t
+        # The skill request NAMES the actual pill selections (not a generic
+        # "for this record type and scenario" placeholder).
+        assert "support tickets for agent building" in t
+        assert "for this record type and scenario" not in t
         # Usable from Kiro or Claude Code; not the synth-data skill.
         assert "Kiro" in t and "Claude Code" in t
         assert "synth-data" not in t
@@ -398,6 +402,40 @@ class TestCommandPanel:
                                   document_name=None, rows=10, seed=1)
         assert "\n" not in sr and "\t" not in sr
         assert sr.startswith("/pocsynth generate a synthetic dataset of line1 line2 with spaces")
+
+    def test_pills_skill_request_names_the_selections(self):
+        # The pills /pocsynth request reflects the actual record type + scenario +
+        # shape + variation + time shape the user chose, so it's reproducible.
+        from pocsynth.ui.app import _build_skill_request
+        sr = _build_skill_request(
+            "pills", prompt=None, document_name=None, rows=1000, seed=42,
+            pills={"record_type": "insurance claims", "scenario": "RAG eval corpus",
+                   "shape": "one-big-table", "variation": "high",
+                   "time_shape": "a flat record set"})
+        assert "insurance claims for RAG eval corpus" in sr
+        assert "one big table" in sr and "high realism" in sr
+        assert "a flat record set" in sr
+        assert sr.endswith("1000 rows, seed 42, written to ./out")
+
+    def test_pills_skill_request_includes_time_series_detail(self):
+        from pocsynth.ui.app import _build_skill_request
+        sr = _build_skill_request(
+            "pills", prompt=None, document_name=None, rows=5000, seed=7,
+            pills={"record_type": "financial transactions", "scenario": "analytics / BI",
+                   "shape": "star-schema", "variation": "medium",
+                   "time_shape": "a time series", "period": "last 12 months",
+                   "granularity": "daily", "trend": "upward"})
+        assert "financial transactions for analytics / BI" in sr
+        assert "star schema" in sr
+        assert "a time series covering last 12 months at daily granularity" in sr
+        assert "upward trend" in sr
+
+    def test_pills_skill_request_tolerates_missing_pills(self):
+        # Back-compat: no pills dict → a sensible generic phrase, no crash.
+        from pocsynth.ui.app import _build_skill_request
+        sr = _build_skill_request("pills", prompt=None, document_name=None,
+                                  rows=10, seed=1, pills=None)
+        assert sr.startswith("/pocsynth generate a synthetic dataset of")
 
 
 # --------------------------------------------------------------------------- #

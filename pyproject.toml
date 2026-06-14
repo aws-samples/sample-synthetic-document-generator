@@ -9,7 +9,7 @@ description = "PoC synthetic-document generator CLI: convert PDFs to synthetic H
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT-0" }
-authors = [{ name = "Brian Maguire", email = "bmaguir@amazon.com" }]
+authors = [{ name = "Brian Maguire" }]
 keywords = ["aws", "bedrock", "pdf", "synthetic-data", "pii", "claude"]
 classifiers = [
   "Development Status :: 3 - Alpha",

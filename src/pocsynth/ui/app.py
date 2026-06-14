@@ -356,8 +356,40 @@ def _build_run_command(mode: str, *, prompt: str | None, document_name: str | No
     return " ".join(args)
 
 
+def _pills_phrase(pills: dict | None) -> str:
+    """A readable description of the pill selections for the skill request, e.g.
+    'support tickets for agent building — one big table, medium realism, a flat
+    record set'. Mirrors the pill sentence the user composed, so the /pocsynth
+    request names exactly what they picked (not a generic placeholder)."""
+    p = pills or {}
+    record_type = p.get("record_type") or "records"
+    scenario = p.get("scenario")
+    shape_label = {"one-big-table": "one big table",
+                   "star-schema": "a star schema (multi-table)"}.get(p.get("shape"))
+    variation = p.get("variation")
+    time_shape = p.get("time_shape")
+
+    head = f"{record_type} for {scenario}" if scenario else record_type
+    # Comma-joined modifiers, omitting any the user left at a neutral/empty value.
+    mods = [m for m in (
+        shape_label,
+        f"{variation} realism" if variation else None,
+        time_shape,
+    ) if m]
+    if time_shape == "a time series":
+        ts = " ".join(filter(None, [
+            f"covering {p['period']}" if p.get("period") else None,
+            f"at {p['granularity']} granularity" if p.get("granularity") else None,
+        ]))
+        if ts:
+            mods[mods.index("a time series")] = f"a time series {ts}"
+        if p.get("trend"):
+            mods.append(f"{p['trend']} trend")
+    return f"{head} — {', '.join(mods)}" if mods else head
+
+
 def _build_skill_request(mode: str, *, prompt: str | None, document_name: str | None,
-                         rows: int, seed: int) -> str:
+                         rows: int, seed: int, pills: dict | None = None) -> str:
     """A NATURAL-LANGUAGE `/pocsynth` request — how you actually invoke the skill
     in Kiro or Claude Code (the skill then composes + runs the CLI for you). NOT
     the underlying ./pocsynth.py command."""
@@ -367,21 +399,22 @@ def _build_skill_request(mode: str, *, prompt: str | None, document_name: str | 
         # The user's own description, collapsed to a single readable line.
         desc = " ".join((prompt or "").split()).rstrip(".")
         what = f"a synthetic dataset of {desc}" if desc else "a synthetic dataset"
-    else:  # pills — short, friendly phrasing rather than the long composed prompt
-        what = "a synthetic dataset for this record type and scenario"
+    else:  # pills — name the actual selections so the request is reproducible
+        what = f"a synthetic dataset of {_pills_phrase(pills)}"
     return (f"/pocsynth generate {what} — {int(rows)} rows, "
             f"seed {int(seed)}, written to ./out")
 
 
 def _render_command_panel(mode: str, *, prompt: str | None = None,
-                          document_name: str | None = None, rows: int, seed: int) -> str:
+                          document_name: str | None = None, rows: int, seed: int,
+                          pills: dict | None = None) -> str:
     """Show how to reproduce this dataset two ways: the exact CLI command, and a
     natural-language /pocsynth skill request (Kiro or Claude Code). A teaching
     artifact for SAs and customers (CONTEXT: Command equivalent)."""
     cli = "pocsynth " + _build_run_command(
         mode, prompt=prompt, document_name=document_name, rows=rows, seed=seed)
     skill = _build_skill_request(
-        mode, prompt=prompt, document_name=document_name, rows=rows, seed=seed)
+        mode, prompt=prompt, document_name=document_name, rows=rows, seed=seed, pills=pills)
 
     skill_note = (
         "The <code>/pocsynth</code> skill (Kiro or Claude Code) takes a plain-language "
@@ -610,6 +643,9 @@ def create_app() -> FastAPI:
         commands_html = _render_command_panel(
             cmd_mode, prompt=command_prompt, document_name=document_name,
             rows=rows, seed=seed,
+            pills={"record_type": record_type, "scenario": scenario, "shape": shape,
+                   "variation": variation, "time_shape": time_shape,
+                   "period": period, "granularity": granularity, "trend": trend},
         )
 
         resp = HTMLResponse(

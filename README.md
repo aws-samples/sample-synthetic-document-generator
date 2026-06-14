@@ -79,7 +79,7 @@ pocsynth generate --schema ./out/schema.json --rows 10000  # free, unlimited
 pocsynth verify --rows ./out/rows.csv --sample ./out/sample.json --schema ./out/schema.json  # prove no real PII leaked
 ```
 
-**The generator is designed to keep real PII out of synthetic output, and `verify` scans to check — best-effort, not a guarantee.** `extract` audits the values it pulls (Amazon Comprehend, on by default), and `schema --infer` does not let a real PII value become an `enum` — PII fields are bound to Faker providers and the real values are discarded. `verify` then scans the generated rows and the schema for any real value that slipped through. Detection is best-effort (Comprehend + an exact-value scan) and may miss reformatted or unflagged values, so **review synthetic output before sharing it**; the extract sample and audit CSV are never safe to share.
+**The generator is designed to keep real PII out of synthetic output, and `verify` scans to check — best-effort, not a guarantee.** `extract` audits the values it pulls (Amazon Comprehend, on by default), and `schema --from-sample` does not let a real PII value become an `enum` — PII fields are bound to Faker providers and the real values are discarded. `verify` then scans the generated rows and the schema for any real value that slipped through. Detection is best-effort (Comprehend + an exact-value scan) and may miss reformatted or unflagged values, so **review synthetic output before sharing it**; the extract sample and audit CSV are never safe to share.
 
 **Determinism.** `--seed` makes generation byte-reproducible. **Distributions:** low-cardinality `enum` fields carry real-world frequency weights (inferred from the source document, model-proposed, or uniform — your choice via `--distribution`).
 
@@ -90,6 +90,8 @@ pocsynth verify --rows ./out/rows.csv --sample ./out/sample.json --schema ./out/
 ### Demo UI
 
 A local web UI (Metabase-style) ships behind an optional extra:
+
+![pocsynth web UI — compose a dataset like a sentence](assets/demo-ui.png)
 
 ```bash
 pip install 'pocsynth[ui]'
@@ -219,6 +221,8 @@ pocsynth pii-audit aws-mp-contract_1/aws-mp-contract_cleaned.html --redact-value
 
 #### Subcommands
 
+Document conversion:
+
 | Command | Purpose |
 |---|---|
 | `pocsynth convert PDF` | PDF → synthetic HTML/Markdown. Envelope includes `result.cost`. |
@@ -228,6 +232,19 @@ pocsynth pii-audit aws-mp-contract_1/aws-mp-contract_cleaned.html --redact-value
 | `pocsynth doctor` | Probe Python + boto3 + PyMuPDF + AWS creds + Bedrock + Comprehend. |
 | `pocsynth version` | Print tool version. |
 
+Structured-data pipeline (see [above](#structured-data-pipeline)):
+
+| Command | Purpose |
+|---|---|
+| `pocsynth run` | One-shot: seed (`--preset`/`--prompt`/`--document`) → schema → generate (→ verify for documents). |
+| `pocsynth presets` | List the 15 bundled preset schemas. |
+| `pocsynth extract PDF` | Pull records / field observations from a real PDF (paid; PII-audited). |
+| `pocsynth schema` | Infer a schema (`--from-sample`/`--from-prompt`, paid) or lint/document one (`--from-schema`, free). |
+| `pocsynth generate` | Generate synthetic rows from a schema/preset (free, offline, seeded). |
+| `pocsynth test` | Validate rows against a schema (free; exit 7 if invalid). |
+| `pocsynth verify` | Scan rows + schema for real source PII (free; exit 8 if leaked). |
+| `pocsynth ui` | Launch the demo web UI (`pip install 'pocsynth[ui]'`). |
+
 #### Key `convert` flags
 
 | Flag | Values | Default |
@@ -236,8 +253,11 @@ pocsynth pii-audit aws-mp-contract_1/aws-mp-contract_cleaned.html --redact-value
 | `--format / -f` | `html`, `markdown` | `html` |
 | `--mode` | `synthetic`, `real` | `synthetic` |
 | `--pages` | integer | all pages |
+| `--num-docs` | integer | `1` |
 | `--pii-audit / --no-pii-audit` | flag | on |
 | `--redact-values` | flag | off (raw PII in audit CSV) |
+| `--max-tokens` | integer | `8000` |
+| `--system-prompt` | text | none (appended to the system prompt) |
 | `--output-dir / -o` | path | current working directory |
 
 Full flag reference: `pocsynth convert --help`.
@@ -503,7 +523,7 @@ Two tiers:
 
 ```bash
 uv sync --all-groups
-uv run pytest                 # 179 stubbed tests (default)
+uv run pytest                 # 481 stubbed tests (default; live excluded)
 uv run pytest -m live         # 14 live tests (needs AWS creds, costs ~$0.10)
 ```
 
