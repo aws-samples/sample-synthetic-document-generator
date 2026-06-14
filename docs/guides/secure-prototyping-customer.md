@@ -82,9 +82,15 @@ is explicit.
 ## In the web UI
 
 `pocsynth ui` → the **"Match a document"** tab does the same flow. After preview
-a **safety panel** shows the PII entities found, the verdict (✓ PASSED / ✗
-FAILED), and a **Download attestation** button. On a failed verdict the download
-is blocked — "NOT cleared for sharing" — until you regenerate or fix the schema.
+a **safety panel** shows the PII entities found, the verdict (✓ NO LEAK DETECTED
+/ ✗ LEAK DETECTED), and a **Download attestation** button. On a failed verdict
+the download is blocked — "NOT cleared for sharing" — until you regenerate or fix
+the schema.
+
+The preview also shows the **equivalent `run --document` command** (CLI and
+agent-skill forms) so you can reproduce the run outside the browser or attach it
+to a runbook. (The CLI form performs a fuller Bedrock extraction than the
+in-browser preview.)
 
 ---
 *Related: [ADR-0010 safety verification](../adr/0010-safety-verification.md),

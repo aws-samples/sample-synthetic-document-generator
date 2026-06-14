@@ -53,6 +53,10 @@ verify verdict as `not_applicable` and the data is **cleared for sharing**.
 Determinism: `--seed` makes the output byte-reproducible — hand a teammate the
 same command and they get the same rows.
 
+Prefer to click first? `pocsynth ui` lets you compose a dataset with pills, and
+every preview prints the **equivalent `run` command** (CLI + agent-skill forms) —
+a quick way to show a customer the exact command line and copy it into a demo.
+
 ## When you *do* have a real document
 
 If the customer hands you a real sample and you need to mirror its exact shape,

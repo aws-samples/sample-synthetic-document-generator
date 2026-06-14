@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 620" font-family="'JetBrains Mono','SF Mono',Menlo,Consolas,monospace" role="img" aria-label="pocsynth web UI command-equivalent panel: the CLI and agent-skill run commands">
+  <defs>
+    <style>
+      .bg{fill:#1c1a17}
+      .card{fill:#252320;stroke:#3d3a35;stroke-width:1}
+      .ink{fill:#f4efe6}
+      .soft{fill:#a89f90}
+      .teal{fill:#6fb3a4}
+      .clay{fill:#e48a6e}
+      .lbl{fill:#a89f90;font-size:12px;letter-spacing:1.5px}
+      .h{fill:#f4efe6;font-weight:700}
+      .mono{fill:#f4efe6;font-size:14px}
+      .flag{fill:#6fb3a4}
+      .term{fill:#141312;stroke:#000;stroke-width:1}
+      .copy{fill:#2f2c28;stroke:#4a463f;stroke-width:1}
+    </style>
+  </defs>
+
+  <rect class="bg" width="1200" height="620"/>
+
+  <!-- window bar -->
+  <circle cx="28" cy="30" r="7" fill="#e06c5b"/>
+  <circle cx="52" cy="30" r="7" fill="#e3b341"/>
+  <circle cx="76" cy="30" r="7" fill="#6fb3a4"/>
+  <text x="600" y="35" text-anchor="middle" class="soft" font-size="13">pocsynth · synthetic data generator</text>
+
+  <!-- panel header -->
+  <text x="48" y="92" font-family="Georgia,'Times New Roman',serif" class="h" font-size="26">Run this from the command line</text>
+  <text x="48" y="120" class="soft" font-size="14">The same dataset, reproducible outside the browser — for a demo, a script, or an agent.</text>
+
+  <!-- CLI block -->
+  <text x="48" y="162" class="lbl">CLI</text>
+  <rect class="copy" x="1060" y="146" width="92" height="26" rx="7"/>
+  <text x="1106" y="164" text-anchor="middle" class="soft" font-size="11">copy</text>
+  <rect class="term" x="48" y="178" width="1104" height="150" rx="12"/>
+  <text x="68" y="208" class="mono"><tspan class="ink">pocsynth run </tspan><tspan class="flag">--prompt</tspan><tspan class="ink"> 'A realistic dataset of customer support</tspan></text>
+  <text x="68" y="232" class="mono ink">tickets, one row per ticket — subject, a free-text body, category,</text>
+  <text x="68" y="256" class="mono ink">priority, status, queue … Optimize for building and testing agents …'</text>
+  <text x="68" y="288" class="mono"><tspan class="flag">--rows</tspan><tspan class="ink"> 1500 </tspan><tspan class="flag">--seed</tspan><tspan class="ink"> 42 </tspan><tspan class="flag">-o</tspan><tspan class="ink"> ./out </tspan><tspan class="flag">--yes</tspan></text>
+
+  <!-- Agent skill block -->
+  <text x="48" y="372" class="lbl">AGENT SKILL · /pocsynth (KIRO OR CLAUDE CODE)</text>
+  <rect class="copy" x="1060" y="356" width="92" height="26" rx="7"/>
+  <text x="1106" y="374" text-anchor="middle" class="soft" font-size="11">copy</text>
+  <rect class="term" x="48" y="388" width="1104" height="124" rx="12"/>
+  <text x="68" y="418" class="mono"><tspan class="ink">./pocsynth.py </tspan><tspan class="clay">--json</tspan><tspan class="ink"> run </tspan><tspan class="flag">--prompt</tspan><tspan class="ink"> 'A realistic dataset of customer</tspan></text>
+  <text x="68" y="442" class="mono ink">support tickets … Optimize for building and testing agents …'</text>
+  <text x="68" y="474" class="mono"><tspan class="flag">--rows</tspan><tspan class="ink"> 1500 </tspan><tspan class="flag">--seed</tspan><tspan class="ink"> 42 </tspan><tspan class="flag">-o</tspan><tspan class="ink"> ./out </tspan><tspan class="flag">--yes</tspan></text>
+
+  <!-- caption -->
+  <line x1="48" y1="546" x2="1152" y2="546" stroke="#3d3a35" stroke-width="1" stroke-dasharray="4 4"/>
+  <text x="48" y="574" class="soft" font-size="13">Reproduces this dataset from the same prompt. The agent-skill form is the <tspan class="teal">/pocsynth</tspan> skill</text>
+  <text x="48" y="594" class="soft" font-size="13">(Kiro or Claude Code); <tspan class="clay">--json</tspan> returns a machine-readable envelope.</text>
+</svg>

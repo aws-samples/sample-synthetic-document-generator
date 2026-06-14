@@ -96,7 +96,11 @@ pip install 'pocsynth[ui]'
 pocsynth ui                                                 # http://127.0.0.1:8000
 ```
 
-Pick a preset, describe a business, or upload a seed document → preview 10 rows → download any size. Built with FastAPI + HTMX; calls the same core as the CLI.
+Compose a dataset from pills (record type × scenario), describe one in your own words, or upload a seed document → preview 10 rows → download any size. Built with FastAPI + HTMX; calls the same core as the CLI.
+
+Every preview also shows the **equivalent CLI and agent-skill commands** (`pocsynth run …` / the `/pocsynth` skill's `./pocsynth.py --json run …`, usable from Kiro or Claude Code) that reproduce the same dataset — so an SA can demonstrate the command line to a customer, and a customer can learn the workflow. Copy-paste to run it outside the browser, in a script, or from an agent.
+
+![command-equivalent panel](assets/demo-run-command.svg)
 
 ---
 

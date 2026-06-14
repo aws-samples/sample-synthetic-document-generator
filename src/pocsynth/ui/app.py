@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import html
 import json
+import shlex
 import tempfile
 import uuid
 from pathlib import Path
@@ -310,6 +311,98 @@ def _render_safety_panel(att: dict, *, pii_entities: int, suppressed_fields: lis
     )
 
 
+_COMMANDS_CSS = """
+<style>
+ #commands{margin-top:1.6rem;}
+ #commands .ch{font-family:'Fraunces',serif; font-weight:600; font-size:1.15rem; color:var(--ink);
+   margin:0 0 .25rem;}
+ #commands .csub{font-size:.85rem; color:var(--ink-soft); margin:0 0 1rem; max-width:60ch;}
+ #commands .cmd{margin-bottom:1rem;}
+ #commands .cmd-head{display:flex; align-items:center; gap:.6rem; margin-bottom:.35rem;}
+ #commands .cmd-label{font-family:'JetBrains Mono',monospace; font-size:.72rem; letter-spacing:.06em;
+   text-transform:uppercase; color:var(--ink-soft);}
+ #commands .copy{margin-left:auto; font-family:'JetBrains Mono',monospace; font-size:.68rem;
+   letter-spacing:.04em; border:1px solid var(--line); background:#fff; color:var(--ink-soft);
+   border-radius:7px; padding:.25rem .6rem; cursor:pointer; transition:all .12s ease;}
+ #commands .copy:hover{border-color:var(--teal); color:var(--teal);}
+ #commands .copy.copied{border-color:var(--teal); color:var(--teal); background:var(--teal-soft);}
+ #commands pre{margin:0; background:var(--ink); color:#f4efe6; border-radius:12px;
+   padding:.9rem 1.05rem; overflow-x:auto; white-space:pre-wrap; word-break:break-word;
+   font-family:'JetBrains Mono',monospace; font-size:.78rem; line-height:1.55;}
+ #commands .cnote{font-size:.74rem; line-height:1.5; color:var(--ink-soft); margin-top:.9rem;
+   padding-top:.7rem; border-top:1px dashed var(--line);}
+ #commands .cnote code{background:var(--surface2); padding:.05rem .3rem; border-radius:4px;}
+</style>"""
+
+
+def _build_run_command(mode: str, *, prompt: str | None, document_name: str | None,
+                       rows: int, seed: int) -> str:
+    """The body of the one-shot `run` command (no leading binary) that reproduces
+    what the pills composed. `mode` is pills | custom | document.
+
+    Honest teaching artifact, not a byte-faithful replay (the document path runs
+    a fuller Bedrock extraction on the CLI than the in-browser preview)."""
+    args = ["run"]
+    if mode == "document":
+        # The browser has no local filesystem path; use an explicit placeholder.
+        args += ["--document", document_name or "<your-file.pdf>"]
+    else:
+        args += ["--prompt", shlex.quote(prompt or "")]
+    args += ["--rows", str(int(rows)), "--seed", str(int(seed)), "-o", "./out", "--yes"]
+    return " ".join(args)
+
+
+def _render_command_panel(mode: str, *, prompt: str | None = None,
+                          document_name: str | None = None, rows: int, seed: int) -> str:
+    """Show the CLI + agent-skill commands that reproduce this dataset, so SAs and
+    customers can learn / demonstrate the command-line workflow (CONTEXT: Command
+    equivalent)."""
+    body = _build_run_command(mode, prompt=prompt, document_name=document_name,
+                              rows=rows, seed=seed)
+    cli = f"pocsynth {body}"
+    skill = f"./pocsynth.py --json {body}"
+
+    # The agent-skill form is the bundled `/pocsynth` skill (works with Kiro or
+    # Claude Code); --json returns the machine-readable envelope.
+    skill_note = (
+        "The agent-skill form is the <code>/pocsynth</code> skill (works with "
+        "Kiro or Claude Code); <code>--json</code> returns a machine-readable envelope."
+    )
+    if mode == "document":
+        note = (
+            'On the CLI, <code>run --document</code> performs a full Bedrock '
+            "extraction (richer than the in-browser preview), then schema → "
+            "generate → verify. Point it at the file's local path. Add "
+            f"<code>--format json</code> for JSON. {skill_note}"
+        )
+    else:
+        note = (
+            "Reproduces this dataset from the same prompt. Add "
+            f"<code>--format json</code> for JSON output. {skill_note}"
+        )
+
+    def _block(label: str, cmd: str) -> str:
+        return (
+            '<div class="cmd"><div class="cmd-head">'
+            f'<span class="cmd-label">{_html_escape(label)}</span>'
+            '<button type="button" class="copy" onclick="copyCmd(this)">copy</button>'
+            "</div>"
+            f'<pre>{_html_escape(cmd)}</pre></div>'
+        )
+
+    return (
+        _COMMANDS_CSS
+        + '<div id="commands">'
+        + '<h3 class="ch">Run this from the command line</h3>'
+        + '<p class="csub">The same dataset, reproducible outside the browser — '
+        + "for a demo, a script, or an agent.</p>"
+        + _block("CLI", cli)
+        + _block("Agent skill · /pocsynth (Kiro or Claude Code)", skill)
+        + f'<div class="cnote">{note}</div>'
+        + "</div>"
+    )
+
+
 def _real_pii_from_scan(detected: list[dict], min_len: int = MIN_PII_VALUE_LEN) -> set[str]:
     """Distinct real PII values Comprehend flagged in the source, long enough to
     scan for without false positives."""
@@ -372,11 +465,16 @@ def create_app() -> FastAPI:
         suppressed_fields: list[str] = []
         pii_entities = 0
         seeded_from_document = False
+        # Captured for the "Command equivalent" panel (the composed/custom prompt
+        # or the uploaded document name) so we can show the reproducing command.
+        command_prompt: str | None = None
+        document_name: str | None = None
 
         with tempfile.TemporaryDirectory() as td:
             tdp = Path(td)
             if seed_document is not None and seed_document.filename:
                 seeded_from_document = True
+                document_name = seed_document.filename
                 bedrock = _client(get_bedrock_client)
                 comprehend = _client(get_comprehend_client)
                 pdf_bytes = seed_document.file.read(MAX_UPLOAD_BYTES + 1)
@@ -433,6 +531,7 @@ def create_app() -> FastAPI:
                     record_type, scenario, shape, variation,
                     time_shape, period, granularity, trend,
                 )
+                command_prompt = effective
                 bedrock = _client(get_bedrock_client)
                 res = run_schema(SchemaConfig(prompt=effective, output_dir=str(tdp),
                                               bedrock_client=bedrock))
@@ -479,10 +578,19 @@ def create_app() -> FastAPI:
             # Synthetic seed (pills/prompt) → no real source; clear any stale verdict.
             _ATTESTATION_STORE.pop(sid, None)
 
+        # Command-equivalent panel: the CLI + agent-skill commands that reproduce
+        # this dataset (CONTEXT: Command equivalent).
+        cmd_mode = "document" if seeded_from_document else ("custom" if prompt else "pills")
+        commands_html = _render_command_panel(
+            cmd_mode, prompt=command_prompt, document_name=document_name,
+            rows=rows, seed=seed,
+        )
+
         resp = HTMLResponse(
             _render_preview(schema, preview_rows, pii_note=pii_note,
                             full_rows=rows, seed=seed)
             + safety_html
+            + commands_html
         )
         resp.set_cookie("sid", sid, httponly=True, samesite="strict")
         return resp
@@ -944,6 +1052,16 @@ _INDEX_HTML = """<!DOCTYPE html>
    // Time-series sub-clause (period/granularity/trend) only applies to a time series.
    const series=document.getElementById('series-clause');
    if(series) series.hidden = (sel.value !== 'a time series');
+ }
+ function copyCmd(btn){
+   // Copy the sibling <pre>'s command text to the clipboard.
+   const pre = btn.closest('.cmd').querySelector('pre');
+   const text = pre ? pre.textContent : '';
+   const done = () => { btn.textContent='copied'; btn.classList.add('copied');
+     setTimeout(()=>{ btn.textContent='copy'; btn.classList.remove('copied'); }, 1500); };
+   if(navigator.clipboard && navigator.clipboard.writeText){
+     navigator.clipboard.writeText(text).then(done).catch(done);
+   } else { done(); }
  }
 </script>
 </body></html>

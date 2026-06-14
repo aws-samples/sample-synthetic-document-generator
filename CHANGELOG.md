@@ -5,6 +5,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — web UI: command-equivalent panel
+- Every UI preview now shows the **equivalent CLI and agent-skill commands** that reproduce the dataset — `pocsynth run …` and `./pocsynth.py --json run …` — as two labeled, copy-to-clipboard blocks. A teaching artifact so SAs can demonstrate the command line and customers can learn the workflow (CONTEXT: *Command equivalent*).
+- Mirrors the user's selections: the composed prompt (pills) or the user's own text (custom) is shell-quoted into `--prompt`; document mode shows `run --document <your-file.pdf> --yes` with a placeholder + a note that the CLI does a fuller Bedrock extraction than the in-browser preview. Flags shown: `--rows`, `--seed`, `-o ./out`, `--yes`; defaulted flags omitted; `--format json` mentioned in the caption.
+- Prompts are quoted with `shlex.quote` (shell-injection-safe) and HTML-escaped for display. +4 UI tests (per-mode commands, flags, injection-safety). Docs updated (README, SKILL.md, both persona guides).
+
 ### Added — secure-prototyping: UI safety panel + per-persona guides (F4)
 - **UI safety/attestation panel** wired into the *existing* upload→preview→download flow (no new screens; reuses the preview-badge palette). On a document-seeded preview it shows: PII entities found, fields suppressed by the guard, the **verify verdict** (✓ PASSED / ✗ FAILED), and a **Download attestation** link (`GET /attestation`). On FAILED it names the leak (masked preview, never the real value) and states "NOT cleared for sharing".
 - **Fail-closed download** — `POST /download` returns **HTTP 409** when the session's safety verdict is `fail` (ADR-0010/0011), so a leaked dataset is never served as safe. Synthetic seeds (pills/prompt) get no panel and are never blocked.

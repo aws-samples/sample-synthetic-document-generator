@@ -276,6 +276,78 @@ class TestSeedModeRouting:
 
 
 # --------------------------------------------------------------------------- #
+# Command-equivalent panel — CLI + agent-skill commands shown with the preview
+# --------------------------------------------------------------------------- #
+class TestCommandPanel:
+    def test_pills_mode_shows_cli_and_skill_run_commands(self, client):
+        app = client.app
+        _override(app, bedrock=bedrock_schema_stub(schema_fields=[
+            {"name": "x", "type": "string", "faker": "word"}]))
+        r = client.post("/preview", data={
+            "seed_mode": "pills", "record_type": "support tickets",
+            "scenario": "agent building", "rows": "2000", "seed": "42"})
+        assert r.status_code == 200
+        t = r.text
+        assert 'id="commands"' in t
+        # Both surfaces, the one-shot run verb, the composed prompt + flags.
+        assert "pocsynth run --prompt" in t
+        assert "./pocsynth.py --json run --prompt" in t
+        assert "--rows 2000" in t and "--seed 42" in t and "-o ./out" in t and "--yes" in t
+        # copy buttons present
+        assert t.count('onclick="copyCmd(this)"') >= 2
+        # The agent-skill surface is the /pocsynth skill, usable from Kiro or
+        # Claude Code (not the synth-data skill).
+        assert "/pocsynth" in t
+        assert "Kiro" in t and "Claude Code" in t
+        assert "synth-data" not in t
+
+    def test_custom_mode_uses_the_user_prompt(self, client):
+        app = client.app
+        _override(app, bedrock=bedrock_schema_stub(schema_fields=[
+            {"name": "x", "type": "string", "faker": "word"}]))
+        r = client.post("/preview", data={
+            "seed_mode": "custom",
+            "prompt": "a beekeeper's hive inspection log",
+            "rows": "100", "seed": "5"})
+        assert r.status_code == 200
+        # The user's own prompt appears, shell-quoted (apostrophe handled).
+        assert "beekeeper" in r.text
+        assert "--rows 100" in r.text and "--seed 5" in r.text
+
+    def test_document_mode_shows_run_document_placeholder(self, client, customer_pdf):
+        app = client.app
+        _override(
+            app,
+            bedrock=bedrock_schema_stub(schema_fields=[
+                {"name": "state", "type": "string", "enum": ["CA", "NY"]}]),
+            comprehend=comprehend_stub(entities_per_call=[[]]),  # clean
+        )
+        with open(customer_pdf, "rb") as fh:
+            r = client.post(
+                "/preview",
+                files={"seed_document": ("customer_intake.pdf", fh, "application/pdf")},
+                data={"rows": "500", "seed": "1"})
+        assert r.status_code == 200
+        t = r.text
+        assert "pocsynth run --document" in t
+        assert "./pocsynth.py --json run --document" in t
+        # The CLI fuller-extraction caveat is stated.
+        assert "full Bedrock extraction" in t
+
+    def test_command_is_shell_injection_safe(self, client):
+        # A prompt with shell metacharacters must be single-quoted in the command,
+        # not interpolated raw.
+        app = client.app
+        _override(app, bedrock=bedrock_schema_stub(schema_fields=[
+            {"name": "x", "type": "string", "faker": "word"}]))
+        r = client.post("/preview", data={
+            "seed_mode": "custom", "prompt": "tickets; rm -rf / now", "rows": "10"})
+        assert r.status_code == 200
+        # Rendered (HTML-escaped) command wraps the whole prompt in single quotes.
+        assert "&#x27;tickets; rm -rf / now&#x27;" in r.text
+
+
+# --------------------------------------------------------------------------- #
 # Scenario C — match a real (PII-bearing) document, output stays clean
 # --------------------------------------------------------------------------- #
 class TestMatchDocument:

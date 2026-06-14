@@ -120,6 +120,15 @@ Two seed sources, one verb:
 _Avoid_: treating "quickstart" (prompt/preset) and "fromdoc" (document) as two features — they are
 one verb differing only by seed source.
 
+**Command equivalent** (the web UI's teaching artifact):
+The CLI and agent-skill commands the web UI displays alongside a preview, showing how to reproduce
+what the pills just composed as a **One-shot run** (`pocsynth run …` / `./pocsynth.py --json run …`).
+A *teaching artifact*, not the code that ran: it mirrors the user's selections (record type/scenario
+→ composed prompt, rows, seed) into a copy-pasteable command so an **SA** can show a customer the
+command line, and a customer can learn the workflow.
+_Avoid_: implying it's a byte-faithful replay — for the document mode the shown `run --document`
+performs a fuller Bedrock extraction than the in-browser preview; the panel says so.
+
 ## Relationships
 
 - **Extract** produces a **Sample**; **Schema-infer** consumes it to produce a **Schema**.
