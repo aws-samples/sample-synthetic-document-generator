@@ -3,8 +3,7 @@
 `pocsynth` is a PoC tool that turns real documents into safe, synthetic artifacts via Amazon
 Bedrock. Two halves: **document synthesis** (`convert` — a PDF → a synthetic rendered HTML/Markdown
 document) and the **structured-data pipeline** (`extract → schema → generate → test` — a PDF → a
-reusable schema → unlimited synthetic data rows). See [`docs/plan/structured-data-support.md`](docs/plan/structured-data-support.md)
-and [`docs/adr/`](docs/adr/).
+reusable schema → unlimited synthetic data rows).
 
 ## Language
 

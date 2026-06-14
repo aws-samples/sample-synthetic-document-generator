@@ -23,10 +23,9 @@ All three are driven WITHOUT touching AWS: the Bedrock + Comprehend clients are
 injected as MagicMock/Stubber, mirroring tests/unit/test_run_conversion.py.
 
 NOTE (forward-looking): these tests target the structured-data pipeline modules
-described in docs/plan/structured-data-support.md (extract / schema / generate /
-test, the presets package, and the FastAPI+HTMX UI). They are committed alongside
-the plan as the acceptance bar Slice 1/2/4 must clear, and will be skipped until
-the corresponding modules land (see the importorskip guard below).
+(extract / schema / generate / test, the presets package, and the FastAPI+HTMX
+UI). They are committed as the acceptance bar Slice 1/2/4 must clear, and will be
+skipped until the corresponding modules land (see the importorskip guard below).
 """
 
 from __future__ import annotations
@@ -47,10 +46,8 @@ UI_AVAILABLE = (
     importlib.util.find_spec("fastapi") is not None
     and importlib.util.find_spec("pocsynth.ui.app") is not None
 )
-PIPELINE_SKIP_REASON = (
-    "structured-data pipeline not implemented yet (see docs/plan/structured-data-support.md)"
-)
-UI_SKIP_REASON = "demo UI / [ui] extra not present (see docs/adr/0009-demo-ui.md)"
+PIPELINE_SKIP_REASON = "structured-data pipeline not implemented yet"
+UI_SKIP_REASON = "demo UI / [ui] extra not present"
 
 
 # --------------------------------------------------------------------------- #

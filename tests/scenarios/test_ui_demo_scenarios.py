@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: MIT-0
 """The same three SA demo-data scenarios, driven through the FastAPI + HTMX UI.
 
-These exercise the demo UI (docs/adr/0009-demo-ui.md) as a thin layer over the
-core: the endpoints must call the same pipeline functions and surface the same
-guarantees as the CLI — crucially, the Scenario-1 PII non-leak guarantee must
-hold through the web path too.
+These exercise the demo UI as a thin layer over the core: the endpoints must call
+the same pipeline functions and surface the same guarantees as the CLI —
+crucially, the Scenario-1 PII non-leak guarantee must hold through the web path
+too.
 
 The UI's paid Bedrock/Comprehend clients are injected via FastAPI dependency
 overrides (the app exposes `get_bedrock_client` / `get_comprehend_client`
