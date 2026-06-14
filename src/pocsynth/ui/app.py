@@ -238,11 +238,16 @@ def _render_safety_panel(att: dict, *, pii_entities: int, suppressed_fields: lis
     leak_html = ""
     blocked_html = ""
     if verdict == "fail":
-        previews = ", ".join(_html_escape(lk["value_preview"]) for lk in leaks)
+        def _leak_label(lk: dict) -> str:
+            # "field: ****" when we know the source field, else just the preview.
+            field = lk.get("field")
+            prev = _html_escape(lk["value_preview"])
+            return f'{_html_escape(field)}: {prev}' if field else prev
+        previews = ", ".join(_leak_label(lk) for lk in leaks)
         where = sorted({w for lk in leaks for w in lk.get("where", [])})
         leak_html = (
             f'<div class="leaks">⚠ {len(leaks)} real value(s) leaked into '
-            f'{_html_escape(", ".join(where))}: {previews}</div>'
+            f'{_html_escape(", ".join(where))} — {previews}</div>'
         )
         blocked_html = (
             '<div class="blocked">Download blocked — regenerate or fix the schema '
@@ -332,6 +337,7 @@ def create_app() -> FastAPI:
         # Set on the document path: real PII values + suppressed fields + entity
         # count, used to build the F4 safety panel after generation.
         real_pii_values: set[str] = set()
+        value_fields: dict[str, str] = {}   # real value → source field name
         suppressed_fields: list[str] = []
         pii_entities = 0
         seeded_from_document = False
@@ -352,18 +358,29 @@ def create_app() -> FastAPI:
                 text = _pdf_text(pdf_bytes)
                 detected = scan_for_pii(text, folder_name=str(tdp / "pii-audit"),
                                         filename="upload", comprehend=comprehend)
+                field_values = _parse_field_values(text)
                 pii_fields = _pii_field_names(text, comprehend)
                 real_pii_values = _real_pii_from_scan(detected)
                 pii_entities = len(detected)
+                # Map each real value to the field it came from, so a leak can
+                # name the offending field in the safety panel.
+                for fname, vals in field_values.items():
+                    for v in vals:
+                        if len(v) >= MIN_PII_VALUE_LEN:
+                            value_fields.setdefault(v, fname)
                 pii_note = (
                     f"PII audit: {len(detected)} entities found; "
                     f"{len(pii_fields)} field(s) flagged — real values are audited "
                     "and the generated output is scanned for leaks (best-effort)."
                 )
+                # Carry the real per-field values into value_counts so the PII
+                # guard (ADR-0005) can strip them at schema-design time — instead
+                # of relying solely on the downstream verify backstop.
                 sample = {
                     "schema": 1, "source": seed_document.filename or "upload",
                     "fields": [
-                        {"name": w, "type_hint": "string", "value_counts": {},
+                        {"name": w, "type_hint": "string",
+                         "value_counts": _value_counts(field_values.get(w, [])),
                          "pii": w in pii_fields}
                         for w in _candidate_fields(text)
                     ],
@@ -410,7 +427,8 @@ def create_app() -> FastAPI:
             rows_text = "".join(
                 stream_rows(schema, PREVIEW_ROWS, export_format="csv", seed=seed)
             )
-            verdict, leaks, schema_scanned = verify_values(real_pii_values, rows_text, schema)
+            verdict, leaks, schema_scanned = verify_values(
+                real_pii_values, rows_text, schema, value_fields)
             attestation = {
                 "schema": 1, "verdict": verdict, "tool_version": __version__,
                 "source": (seed_document.filename or "upload") if seed_document else "upload",
@@ -564,16 +582,13 @@ def _candidate_fields(text: str) -> list[str]:
     return fields or ["full_name", "email", "amount", "status"]
 
 
-def _pii_field_names(text: str, comprehend) -> set[str]:
-    """Flag fields whose values Comprehend marks as PII.
+def _parse_field_values(text: str) -> dict[str, list[str]]:
+    """Group a document's `Label: value` lines into {field_name: [values…]}.
 
-    Collects the values per `Label: value` field, then delegates to
-    extract._pii_fields, which scans ONE concatenated request per field (not
-    one per line) — the same batched logic the CLI extract stage uses.
-    """
+    The single source for both PII flagging and the sample's value_counts, so
+    the schema-inference sample carries the real values the PII guard needs to
+    suppress (matching the CLI extract path)."""
     import re
-
-    from pocsynth.extract import _pii_fields
 
     by_field: dict[str, list[str]] = {}
     for line in text.splitlines():
@@ -581,7 +596,30 @@ def _pii_field_names(text: str, comprehend) -> set[str]:
         if not m:
             continue
         name = m.group(1).strip().lower().replace(" ", "_")
-        by_field.setdefault(name, []).append(m.group(2))
+        by_field.setdefault(name, []).append(m.group(2).strip())
+    return by_field
+
+
+def _value_counts(values: list[str]) -> dict[str, int]:
+    """{value: count} for a field's observed values — the shape schema inference
+    and the PII guard expect."""
+    counts: dict[str, int] = {}
+    for v in values:
+        v = str(v).strip()
+        if v:
+            counts[v] = counts.get(v, 0) + 1
+    return counts
+
+
+def _pii_field_names(text: str, comprehend) -> set[str]:
+    """Flag fields whose values Comprehend marks as PII.
+
+    Delegates to extract._pii_fields, which scans ONE concatenated request per
+    field (not one per line) — the same batched logic the CLI extract stage uses.
+    """
+    from pocsynth.extract import _pii_fields
+
+    by_field = _parse_field_values(text)
     records = [{name: " ".join(vals)} for name, vals in by_field.items()]
     return _pii_fields(records, comprehend)
 

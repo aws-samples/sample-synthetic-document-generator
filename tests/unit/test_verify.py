@@ -8,7 +8,13 @@ import json
 
 import pytest
 
-from pocsynth.verify import VerifyConfig, _mask, _real_pii_values, run_verify
+from pocsynth.verify import (
+    VerifyConfig,
+    _mask,
+    _real_pii_values,
+    run_verify,
+    verify_values,
+)
 
 
 def _sample(tmp_path, obj) -> str:
@@ -129,3 +135,25 @@ class TestConformPipeline:
         rp = _rows(tmp_path, "claimant,amount\nHarold Webb,99.00\n")
         res = run_verify(VerifyConfig(rows_path=rp, sample_path=sp))
         assert res["verdict"] == "fail"
+
+
+class TestLeakFieldNaming:
+    def test_leak_names_its_source_field(self):
+        # value_fields maps a real value to the field it came from; the leak
+        # carries that field name so the UI panel can show "vin: ****".
+        verdict, leaks, _ = verify_values(
+            {"3R5UAL4YUKPYGF1GZ"},
+            "expiry,vin\n2015-08-18,3R5UAL4YUKPYGF1GZ\n",
+            schema=None,
+            value_fields={"3R5UAL4YUKPYGF1GZ": "vin"},
+        )
+        assert verdict == "fail"
+        assert leaks[0]["field"] == "vin"
+        assert leaks[0]["value_preview"] == _mask("3R5UAL4YUKPYGF1GZ")
+        # The full value is never in the leak record.
+        assert "3R5UAL4YUKPYGF1GZ" not in str(leaks)
+
+    def test_no_value_fields_omits_field_key(self):
+        _, leaks, _ = verify_values(
+            {"3R5UAL4YUKPYGF1GZ"}, "x\n3R5UAL4YUKPYGF1GZ\n", schema=None)
+        assert leaks and "field" not in leaks[0]

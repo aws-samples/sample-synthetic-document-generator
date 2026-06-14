@@ -111,6 +111,7 @@ def _schema_searchable_text(schema: dict[str, Any]) -> str:
 
 def verify_values(
     real_values: set[str], rows_text: str, schema: dict[str, Any] | None,
+    value_fields: dict[str, str] | None = None,
 ) -> tuple[str, list[dict[str, Any]], bool]:
     """Core scan, shared by the CLI `verify` and the UI safety panel.
 
@@ -119,6 +120,9 @@ def verify_values(
     verdict is `not_applicable` when there are no real values to check (a public
     or synthetic seed), else `fail` if any value appears in the rows or schema,
     else `pass`. Leaks carry only a masked preview — never the full value.
+
+    `value_fields` optionally maps a real value to the source field it came
+    from, so a leak can name the offending field (`field` key) for the caller.
     """
     schema_text = _schema_searchable_text(schema) if schema else ""
     schema_scanned = bool(schema_text)
@@ -136,7 +140,11 @@ def verify_values(
                 where.append("rows")
             if in_schema:
                 where.append("schema")
-            leaks.append({"value_preview": _mask(val), "where": where})
+            leak: dict[str, Any] = {"value_preview": _mask(val), "where": where}
+            field = (value_fields or {}).get(val)
+            if field:
+                leak["field"] = field
+            leaks.append(leak)
 
     verdict = "fail" if leaks else "pass"
     return verdict, leaks, schema_scanned

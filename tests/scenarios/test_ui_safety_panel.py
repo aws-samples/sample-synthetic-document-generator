@@ -148,6 +148,19 @@ class TestSafetyPanelFailClosed:
         # Even when reporting the leak, the full real value is masked.
         assert "Alice Hernandez" not in r.text
 
+    def test_leak_names_the_source_field(self, client, customer_pdf):
+        # The customer PDF has "Patient: Alice Hernandez", so the leaked value
+        # maps to the `patient` field — the panel names it (vs a bare ****).
+        app = client.app
+        self._setup_leak(app)
+        with open(customer_pdf, "rb") as fh:
+            r = client.post(
+                "/preview",
+                files={"seed_document": ("customer_intake.pdf", fh, "application/pdf")},
+                data={"rows": "100"})
+        assert r.status_code == 200
+        assert "patient:" in r.text  # field-qualified leak label
+
     def test_download_is_fail_closed(self, client, customer_pdf):
         app = client.app
         self._setup_leak(app)
