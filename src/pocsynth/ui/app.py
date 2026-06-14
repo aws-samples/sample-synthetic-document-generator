@@ -764,7 +764,11 @@ _INDEX_HTML = """<!DOCTYPE html>
  .pill::after{content:"▾"; position:absolute; right:.55em; font-size:.7em; color:var(--ink-soft);
    pointer-events:none;}
  .pill.num::after{content:none;}
- .pill.num input{width:2.6em; text-align:center; padding:0;}
+ .pill.num input{width:4.5em; text-align:center; padding:0;}
+ /* hide the native number spinners so the value isn't crowded/clipped */
+ .pill.num input::-webkit-outer-spin-button,
+ .pill.num input::-webkit-inner-spin-button{-webkit-appearance:none; margin:0;}
+ .pill.num input[type=number]{-moz-appearance:textfield;}
  .series-clause[hidden]{display:none;}
  .pill.teal{background:var(--teal-soft); border-color:var(--teal); box-shadow:2px 2px 0 var(--teal);}
  .pill.teal:hover{box-shadow:3px 3px 0 var(--teal);}
@@ -828,12 +832,12 @@ _INDEX_HTML = """<!DOCTYPE html>
 </style></head><body>
 <div class="wrap">
  <header class="mast">
-   <h1>Synthetic Data <em>Foundry</em></h1>
+   <h1>Synthetic Data <em>Generator</em></h1>
    <span class="kicker">pocsynth · bedrock + faker</span>
  </header>
  <p class="tagline">A real data-generation utility. Compose a dataset like a sentence,
    preview the shape, then export the <b>full set at any row count</b> — row
-   generation runs locally.</p>
+   generation runs locally with Faker.</p>
 
  <div class="layout">
   <form class="card" hx-post="/preview" hx-target="#preview" hx-swap="outerHTML"
@@ -866,11 +870,11 @@ _INDEX_HTML = """<!DOCTYPE html>
       <button type="button" class="seedtab" role="tab" aria-selected="false"
         onclick="pickSeed(this,'custom')">✎ Describe your own <span class="tag paid">custom</span></button>
       <button type="button" class="seedtab" role="tab" aria-selected="false"
-        onclick="pickSeed(this,'upload')">⬆ Match a document <span class="tag paid">sent to AWS</span></button>
+        onclick="pickSeed(this,'upload')">⬆ Match a document <span class="tag paid">sent to Bedrock</span></button>
     </div>
     <div class="seedpane on" data-seed="pills">
       <label>The sentence above composes the prompt. Bedrock designs the schema;
-        row generation runs locally.</label>
+        row generation runs locally with Faker.</label>
     </div>
     <div class="seedpane" data-seed="custom">
       <label>Describe exactly the dataset you need — columns, ranges, relationships.
@@ -907,9 +911,9 @@ _INDEX_HTML = """<!DOCTYPE html>
      sample of rows before committing.</p></div></div>
    <div class="step"><div class="n">3</div><div>
      <p><b>Export the full set.</b> Stream CSV or JSON at any row count — the schema
-     is reused, so row generation stays local.</p></div></div>
+     is reused, so row generation stays local (Faker).</p></div></div>
    <div class="ledger">
-     <div><span class="free">●</span> generate · stream · download — <span class="free">runs locally, unlimited</span></div>
+     <div><span class="free">●</span> generate · stream · download — <span class="free">local Faker, unlimited</span></div>
      <div><span class="paid">●</span> schema design — <span class="paid">one Bedrock call</span></div>
      <div style="margin-top:.4rem">uploaded documents are sent to AWS (Comprehend + Bedrock), PII-audited &amp; output scanned for leaks</div>
    </div>
