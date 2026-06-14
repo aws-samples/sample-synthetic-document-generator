@@ -49,32 +49,62 @@ MIN_PII_VALUE_LEN = 4           # ignore very short PII values (false-positive g
 # sanity backstop against a typo'd 10-billion request, not a product limit.
 MAX_DOWNLOAD_ROWS = 100_000_000
 
-# Pill vocabularies — drive the composed prompt. Advertising + marketing added.
-BUSINESS_TYPES = [
-    "B2B SaaS", "B2C SaaS", "Ecommerce", "Advertising", "Marketing",
-    "Healthcare", "Fintech", "Education", "Retail", "Manufacturing",
-    "Transportation", "Hospitality", "Real Estate", "Media & Entertainment",
-    "Gaming", "Insurance", "Logistics", "Energy & Utilities",
-]
+# Pill vocabularies — drive the composed prompt. The RECORD TYPE carries the
+# domain (one row per ticket/claim/review/…); the SCENARIO tunes the prompt for
+# the downstream workload. Aligned to the real SA/customer use cases seen across
+# the engagement SIMs (RAG eval, agent building, document extraction, …).
+# Each maps the short pill value -> the rich guidance injected into the NL prompt.
+RECORD_TYPES = {
+    "support tickets": "customer support tickets, one row per ticket — subject, a free-text body describing the problem, category, priority, channel, status, assigned queue, customer tier, and resolution time",
+    "insurance claims": "insurance claims intake, one row per claim — claim id, policy number, line of business, a free-text loss description, incident state, amount claimed, intake channel, and status",
+    "commercial leases": "commercial real-estate lease abstracts, one row per lease — lease id, tenant, property type, square footage, base rent, term start/end, renewal options, and a free-text clause summary",
+    "product reviews": "product reviews, one row per review — product, rating, a free-text review title and body, verified-purchase flag, helpful votes, and sentiment",
+    "contact-center transcripts": "contact-center call transcripts, one row per call — call id, agent, queue, detected intent, a full free-text transcript, disposition, sentiment, talk time, and CSAT",
+    "knowledge articles": "knowledge-base / documentation articles, one row per document — title, a free-text retrievable body, category, audience, status, and word count",
+    "financial transactions": "financial / payment transactions, one row per transaction — transaction id, account, amount, currency, merchant category, channel, status, and fraud flag",
+    "customer contacts": "CRM customer contact records, one row per contact — name, email, company, title, lead source, lifecycle stage, region, and engagement score",
+    "orders": "e-commerce orders, one row per order — order id, SKU, category, quantity, amount, channel, fulfilment status, and order date",
+    "telemetry events": "device / clickstream / security telemetry, one row per event — event id, actor, source, event type, geo, numeric measures, and outcome",
+}
+
+SCENARIOS = {
+    "RAG eval corpus": "Optimize for retrieval-augmented-generation evaluation: include at least one substantial free-text body field (several sentences to a few paragraphs) that is meaningfully retrievable, plus a stable identifier and topical category fields to support chunking, grounding, and answer-citation checks.",
+    "agent building": "Optimize for building and testing agents: include clear branchable status/disposition and category fields with realistic, well-distributed categorical values so deterministic routing, tool-selection, and state-transition logic can be exercised end to end.",
+    "model benchmarking": "Optimize for model benchmarking: vary difficulty and length across rows — mix short/simple and long/ambiguous free-text and include edge-case and outlier records — so accuracy can be measured across a spread of input complexity.",
+    "load testing": "Optimize for load and performance testing: favor realistic high-volume distributions — heavy-tailed amounts/durations, skewed categorical frequencies, and a small fraction of outliers — so throughput and percentile latencies reflect production traffic shapes.",
+    "analytics / BI": "Optimize for analytics and BI: include clean dimensions, well-defined categorical attributes with believable value distributions, and the key numeric measures an analyst would group, filter, and aggregate on.",
+    "demo / prototype": "Optimize for a clear, presentable demo: pick the columns a stakeholder would immediately recognize for this record type, with believable values and a few illustrative outliers.",
+}
+
 SCHEMA_SHAPES = {
     "one-big-table": "a single denormalized wide table (one big table / OBT)",
     "star-schema": "a star schema with a central fact table and dimension tables",
 }
-GROWTH = ["steady", "spike", "decline", "seasonal", "hypergrowth"]
 VARIATION = ["low", "medium", "high"]
-GRANULARITY = ["hourly", "daily", "weekly", "monthly"]
-YEARS = ["2021", "2022", "2023", "2024", "2025", "2026"]
 
-# A strong worked example for the custom / describe path.
+# Time-series framing is OPTIONAL — most record sets are flat (one row per entity).
+# PERIOD / GRANULARITY / TREND apply only when "a time series" is chosen.
+TIME_SHAPE = {
+    "a flat record set": "a flat record set (each row an independent record; no time-series framing)",
+    "a time series": "a time series over a defined period",
+}
+PERIOD = ["last 30 days", "last 90 days", "last 12 months", "2024", "2025", "2026"]
+GRANULARITY = ["hourly", "daily", "weekly", "monthly"]
+TREND = ["steady", "spike", "decline", "seasonal", "hypergrowth"]
+
+# A strong worked example for the custom / describe path — a SIM-representative
+# support-ticket dataset for agent building (exercises free-text + branchable fields).
 EXAMPLE_PROMPT = (
-    "A digital advertising platform's campaign performance dataset: one row per "
-    "ad-campaign per day. Columns: campaign_id, advertiser_name, channel "
-    "(search/social/display/video/native), objective (awareness/consideration/"
-    "conversion), audience_segment, country, device (desktop/mobile/tablet), "
-    "impressions, clicks, ctr, spend_usd, conversions, revenue_usd, roas, "
-    "cpc_usd, cpm_usd, and date over calendar 2025 with seasonal Q4 lift, "
-    "realistic funnel ratios (clicks << impressions, conversions << clicks), and "
-    "a few under-performing campaigns as outliers."
+    "A SaaS support desk's ticket dataset for building and testing a triage agent: "
+    "one row per ticket. Columns: ticket_id, opened_at, customer_tier "
+    "(free/pro/enterprise), channel (email/chat/phone/web), category "
+    "(billing/auth/integration/bug/how-to/outage), priority (low/medium/high/urgent), "
+    "subject, body (a realistic multi-sentence customer description of the problem), "
+    "status (new/triaged/in_progress/waiting_on_customer/resolved/closed), "
+    "assigned_queue, first_response_minutes, resolution_minutes, reopened, and "
+    "csat (1-5). Make categories and statuses well-distributed so routing logic can "
+    "be exercised, vary body length and difficulty across tickets, and include a few "
+    "long, ambiguous, multi-issue tickets as edge cases."
 )
 
 
@@ -306,12 +336,14 @@ def create_app() -> FastAPI:
     def preview(
         request: Request,
         rows: int = Form(100),
-        business: str | None = Form(None),
+        record_type: str = Form("support tickets"),
+        scenario: str = Form("agent building"),
         shape: str = Form("one-big-table"),
-        year: str | None = Form(None),
-        growth: str | None = Form(None),
-        variation: str | None = Form(None),
+        variation: str | None = Form("medium"),
+        time_shape: str = Form("a flat record set"),
+        period: str | None = Form(None),
         granularity: str | None = Form(None),
+        trend: str | None = Form(None),
         prompt: str | None = Form(None),
         seed: int = Form(42),
         seed_mode: str = Form("pills"),
@@ -325,7 +357,6 @@ def create_app() -> FastAPI:
             return (override or dep)()
 
         prompt = (prompt or "").strip() or None
-        business = business or None
         # Route on the active seed tab, not on whichever field is non-empty: a
         # stale value in a hidden pane (e.g. a pre-filled custom textarea) must
         # never override the user's choice. The browser sets seed_mode from the
@@ -399,7 +430,8 @@ def create_app() -> FastAPI:
                 # Pills OR a free-text prompt → compose a precise NL prompt and
                 # infer the schema from it (the same Bedrock path).
                 effective = prompt or _compose_prompt(
-                    business or "B2B SaaS", shape, year, growth, variation, granularity
+                    record_type, scenario, shape, variation,
+                    time_shape, period, granularity, trend,
                 )
                 bedrock = _client(get_bedrock_client)
                 res = run_schema(SchemaConfig(prompt=effective, output_dir=str(tdp),
@@ -531,31 +563,44 @@ def _safe_filename(name: str, ext: str) -> str:
     return f"{slug or 'dataset'}.{ext}"
 
 
-def _compose_prompt(business, shape, year, growth, variation, granularity) -> str:
-    """Turn the pill selections into a precise natural-language schema request."""
+def _compose_prompt(record_type, scenario, shape, variation,
+                    time_shape="a flat record set",
+                    period=None, granularity=None, trend=None) -> str:
+    """Turn the pill selections into a precise natural-language schema request.
+
+    The record type carries the domain (one row per ticket/claim/review/…); the
+    scenario tunes the prompt for the downstream workload; time framing is
+    OPTIONAL — a flat record set yields a record-per-entity prompt with no forced
+    calendar, while "a time series" adds period/granularity/trend.
+    """
+    record_desc = RECORD_TYPES.get(record_type, next(iter(RECORD_TYPES.values())))
     shape_desc = SCHEMA_SHAPES.get(shape, SCHEMA_SHAPES["one-big-table"])
-    parts = [
-        f"A realistic {business} business dataset, modeled as {shape_desc}.",
-    ]
-    if year:
-        parts.append(f"Cover the {year} calendar year")
+    scenario_desc = SCENARIOS.get(scenario, "")
+
+    parts = [f"A realistic dataset of {record_desc}, modeled as {shape_desc}."]
+
+    # Optional time-series framing — only when explicitly chosen.
+    if time_shape == "a time series":
+        clause = "Model the rows as a time series"
+        if period:
+            clause += f" covering {period}"
         if granularity:
-            parts[-1] += f" at {granularity} granularity"
-        parts[-1] += "."
-    elif granularity:
-        parts.append(f"Use {granularity} granularity.")
-    traits = []
-    if growth:
-        traits.append(f"{growth} growth")
+            clause += f" at {granularity} granularity"
+        parts.append(clause + ".")
+        if trend:
+            parts.append(f"Exhibit a {trend} trend over the period.")
+
     if variation:
-        traits.append(f"{variation} variation/noise")
-    if traits:
-        parts.append("Exhibit " + " and ".join(traits) + " over the time range.")
+        parts.append(f"Use {variation} variation/noise across records.")
+
+    if scenario_desc:
+        parts.append(scenario_desc)
+
     parts.append(
-        "Choose the columns a data analyst would expect for this domain — "
+        "Choose the columns a practitioner would expect for this record type — "
         "identifiers, dimensions, categorical attributes with realistic value "
-        "distributions, dates, and the key numeric metrics — with believable "
-        "relationships between them and a few outliers."
+        "distributions, any free-text fields the record naturally carries, dates, "
+        "and the key numeric measures — with believable relationships and a few outliers."
     )
     return " ".join(parts)
 
@@ -638,15 +683,17 @@ def _render_index() -> str:
     """Fill the index template's pill option lists + the worked example."""
     return (
         _INDEX_HTML
-        .replace("__BUSINESS__", _opts(BUSINESS_TYPES, default="B2B SaaS"))
+        .replace("__RECORD__", _opts(list(RECORD_TYPES), default="support tickets"))
+        .replace("__SCENARIO__", _opts(list(SCENARIOS), default="agent building"))
         .replace("__SHAPE__", _opts(
             list(SCHEMA_SHAPES), default="one-big-table",
             labels={"one-big-table": "One Big Table (OBT)",
                     "star-schema": "Star Schema (multi-table)"}))
-        .replace("__YEAR__", _opts(YEARS, default="2025"))
-        .replace("__GROWTH__", _opts(GROWTH, default="steady"))
         .replace("__VARIATION__", _opts(VARIATION, default="medium"))
+        .replace("__TIMESHAPE__", _opts(list(TIME_SHAPE), default="a flat record set"))
+        .replace("__PERIOD__", _opts(PERIOD, default="last 12 months"))
         .replace("__GRAN__", _opts(GRANULARITY, default="daily"))
+        .replace("__TREND__", _opts(TREND, default="steady"))
         .replace("__PREVIEWN__", str(PREVIEW_ROWS))
         # The worked example is opt-in via the "load the worked example" button
         # (it must NOT prefill the textarea, or it overrides the pills).
@@ -718,6 +765,7 @@ _INDEX_HTML = """<!DOCTYPE html>
    pointer-events:none;}
  .pill.num::after{content:none;}
  .pill.num input{width:2.6em; text-align:center; padding:0;}
+ .series-clause[hidden]{display:none;}
  .pill.teal{background:var(--teal-soft); border-color:var(--teal); box-shadow:2px 2px 0 var(--teal);}
  .pill.teal:hover{box-shadow:3px 3px 0 var(--teal);}
  /* seed source tabs */
@@ -785,7 +833,7 @@ _INDEX_HTML = """<!DOCTYPE html>
  </header>
  <p class="tagline">A real data-generation utility. Compose a dataset like a sentence,
    preview the shape, then export the <b>full set at any row count</b> — row
-   row generation runs locally.</p>
+   generation runs locally.</p>
 
  <div class="layout">
   <form class="card" hx-post="/preview" hx-target="#preview" hx-swap="outerHTML"
@@ -793,17 +841,21 @@ _INDEX_HTML = """<!DOCTYPE html>
    <p class="sentence">
      Generate a
      <span class="pill num"><input type="number" name="rows" value="1000" min="1" step="100"></span>
-     row dataset for a
-     <span class="pill"><select name="business">__BUSINESS__</select></span>
-     business, as
+     row dataset of
+     <span class="pill"><select name="record_type">__RECORD__</select></span>
+     for
+     <span class="pill"><select name="scenario">__SCENARIO__</select></span>, as
      <span class="pill"><select name="shape">__SHAPE__</select></span>,
-     covering
-     <span class="pill"><select name="year">__YEAR__</select></span>
      with
-     <span class="pill"><select name="growth">__GROWTH__</select></span> growth,
-     <span class="pill"><select name="variation">__VARIATION__</select></span> variation,
-     and
-     <span class="pill"><select name="granularity">__GRAN__</select></span> granularity.
+     <span class="pill"><select name="variation">__VARIATION__</select></span> realism, shaped as
+     <span class="pill"><select name="time_shape" id="time_shape" onchange="toggleSeries(this)">__TIMESHAPE__</select></span><span
+       id="series-clause" class="series-clause" hidden>
+     covering
+     <span class="pill"><select name="period">__PERIOD__</select></span>
+     at
+     <span class="pill"><select name="granularity">__GRAN__</select></span> granularity
+     with
+     <span class="pill"><select name="trend">__TREND__</select></span> trend</span>.
    </p>
 
    <div class="seeds">
@@ -848,8 +900,8 @@ _INDEX_HTML = """<!DOCTYPE html>
   <aside>
    <h2>How it works</h2>
    <div class="step"><div class="n">1</div><div>
-     <p><b>Compose or describe.</b> Tune the pills for a common domain, write your
-     own spec, or upload a document to mirror.</p></div></div>
+     <p><b>Compose or describe.</b> Pick a record type and the workload it's for,
+     write your own spec, or upload a document to mirror.</p></div></div>
    <div class="step"><div class="n">2</div><div>
      <p><b>Preview the shape.</b> Bedrock designs the schema; see the columns and a
      sample of rows before committing.</p></div></div>
@@ -883,6 +935,11 @@ _INDEX_HTML = """<!DOCTYPE html>
  }
  function loadExample(){
    const e=document.querySelector('[name=prompt]'); if(e) e.value=__EXAMPLE_JSON__;
+ }
+ function toggleSeries(sel){
+   // Time-series sub-clause (period/granularity/trend) only applies to a time series.
+   const series=document.getElementById('series-clause');
+   if(series) series.hidden = (sel.value !== 'a time series');
  }
 </script>
 </body></html>

@@ -23,11 +23,19 @@ F3_PRESETS = {
     "ad_campaign", "knowledge_corpus", "security_telemetry",
 }
 
+# Record-type presets added to cover the SIM document/agent use cases not in the
+# original verticals (RAG corpora, agent-building, document extraction).
+SIM_GAP_PRESETS = {
+    "support_tickets", "commercial_leases", "product_reviews",
+    "financial_transactions", "contact_center_transcripts",
+}
+
 
 def test_list_presets_covers_originals_and_verticals():
     names = set(ALL_PRESETS)
     assert {"b2b_saas", "ecommerce_orders", "healthcare_lite"} <= names
     assert F3_PRESETS <= names, F3_PRESETS - names
+    assert SIM_GAP_PRESETS <= names, SIM_GAP_PRESETS - names
 
 
 def test_unknown_preset_raises():

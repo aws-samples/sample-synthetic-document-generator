@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "name": "support_tickets",
+  "description": "Customer support tickets, one row per ticket (synthetic; seeds agent-triage and RAG demos).",
+  "fields": [
+    {"name": "ticket_id", "type": "string", "regex": "TKT-[0-9]{8}", "description": "ticket identifier"},
+    {"name": "customer_tier", "type": "string", "enum": ["free", "pro", "enterprise"], "weights": {"free": 0.5, "pro": 0.35, "enterprise": 0.15}, "description": "customer plan tier"},
+    {"name": "channel", "type": "string", "enum": ["email", "chat", "phone", "web"], "weights": {"email": 0.4, "chat": 0.3, "phone": 0.15, "web": 0.15}, "description": "intake channel"},
+    {"name": "category", "type": "string", "enum": ["billing", "auth", "integration", "bug", "how-to", "outage"], "weights": {"billing": 0.2, "auth": 0.15, "integration": 0.15, "bug": 0.2, "how-to": 0.2, "outage": 0.1}, "description": "ticket category (branchable for routing)"},
+    {"name": "priority", "type": "string", "enum": ["low", "medium", "high", "urgent"], "weights": {"low": 0.3, "medium": 0.4, "high": 0.2, "urgent": 0.1}, "description": "ticket priority"},
+    {"name": "subject", "type": "string", "faker": "sentence", "faker_args": {"nb_words": 8}, "description": "short ticket subject"},
+    {"name": "body", "type": "string", "faker": "paragraph", "faker_args": {"nb_sentences": 6}, "description": "free-text problem description (retrievable body)"},
+    {"name": "status", "type": "string", "enum": ["new", "triaged", "in_progress", "waiting_on_customer", "resolved", "closed"], "weights": {"new": 0.12, "triaged": 0.13, "in_progress": 0.2, "waiting_on_customer": 0.15, "resolved": 0.2, "closed": 0.2}, "description": "branchable workflow status"},
+    {"name": "assigned_queue", "type": "string", "enum": ["tier1", "tier2", "billing-ops", "engineering", "trust-safety"], "weights": {"tier1": 0.45, "tier2": 0.25, "billing-ops": 0.12, "engineering": 0.13, "trust-safety": 0.05}, "description": "queue the ticket was routed to"},
+    {"name": "first_response_minutes", "type": "integer", "faker": "random_int", "faker_args": {"min": 1, "max": 2880}, "description": "minutes to first response"},
+    {"name": "resolution_minutes", "type": "integer", "faker": "random_int", "faker_args": {"min": 5, "max": 20160}, "description": "minutes to resolution"},
+    {"name": "csat", "type": "integer", "faker": "random_int", "faker_args": {"min": 1, "max": 5}, "description": "1-5 satisfaction score"},
+    {"name": "opened_at", "type": "datetime", "faker": "date_time_this_year", "description": "ticket opened timestamp"}
+  ]
+}

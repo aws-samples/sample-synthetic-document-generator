@@ -30,6 +30,11 @@ _PRESETS: dict[str, str] = {
     "ad_campaign": "Digital ad-campaign daily performance: channel, impressions, clicks, conversions, spend.",
     "knowledge_corpus": "Knowledge-base article corpus (RAG seed): title, body, category, audience, status.",
     "security_telemetry": "Security/auth-event telemetry: user, source IP, event type, geo, risk score, outcome.",
+    "support_tickets": "Support tickets (RAG/agent seed): subject, free-text body, category, priority, status, queue.",
+    "commercial_leases": "Commercial lease abstracts: tenant, property type, sq ft, base rent, term, renewal, clauses.",
+    "product_reviews": "Product reviews: product, rating, free-text title/body, verified purchase, votes, sentiment.",
+    "financial_transactions": "Payment transactions: amount, currency, merchant category, channel, status, fraud flag.",
+    "contact_center_transcripts": "Contact-center transcripts: agent, queue, intent, free-text transcript, CSAT.",
 }
 
 

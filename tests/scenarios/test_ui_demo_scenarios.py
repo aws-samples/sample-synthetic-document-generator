@@ -50,6 +50,43 @@ def _override(app, *, bedrock=None, comprehend=None):
 
 
 # --------------------------------------------------------------------------- #
+# _compose_prompt — pills → NL prompt (time-series is OPTIONAL, scenario-tuned)
+# --------------------------------------------------------------------------- #
+class TestComposePrompt:
+    def test_flat_record_set_has_no_time_series_framing(self):
+        from pocsynth.ui.app import _compose_prompt
+        p = _compose_prompt("insurance claims", "RAG eval corpus",
+                            "one-big-table", "medium").lower()
+        # The record type carries the domain; no forced calendar framing.
+        assert "insurance claims" in p
+        assert "time series" not in p
+        assert "granularity" not in p
+        assert "trend" not in p
+        # Scenario guidance is injected (RAG → retrieval).
+        assert "retrieval" in p
+
+    def test_time_series_adds_period_granularity_trend(self):
+        from pocsynth.ui.app import _compose_prompt
+        p = _compose_prompt("telemetry events", "load testing", "one-big-table",
+                            "high", "a time series", "last 90 days", "hourly", "spike").lower()
+        assert "time series" in p
+        assert "last 90 days" in p and "hourly" in p
+        assert "spike trend" in p
+        # Scenario guidance is injected (load testing → high-volume).
+        assert "high-volume" in p
+
+    def test_scenario_guidance_varies(self):
+        from pocsynth.ui.app import _compose_prompt
+        agent = _compose_prompt("support tickets", "agent building",
+                                "one-big-table", "medium").lower()
+        bench = _compose_prompt("support tickets", "model benchmarking",
+                                "one-big-table", "medium").lower()
+        assert "branchable" in agent
+        assert "difficulty" in bench
+        assert agent != bench
+
+
+# --------------------------------------------------------------------------- #
 # Page + pill sentence
 # --------------------------------------------------------------------------- #
 class TestPageAndPills:
@@ -57,19 +94,34 @@ class TestPageAndPills:
         r = client.get("/")
         assert r.status_code == 200
         # The Metabase-style fill-in-the-blank sentence (with pills) is present.
-        assert "row dataset for a" in r.text.lower()
+        assert "row dataset of" in r.text.lower()
         assert 'class="pill' in r.text
         assert "healthz" not in r.text
 
-    def test_index_includes_advertising_and_marketing(self, client):
+    def test_index_renders_record_type_and_scenario_pills(self, client):
+        # The pills are keyed on record type (the domain) and scenario (workload),
+        # aligned to the SIM use cases — not an industry pill.
         r = client.get("/")
-        assert ">Advertising<" in r.text and ">Marketing<" in r.text
+        assert 'name="record_type"' in r.text and 'name="scenario"' in r.text
+        assert ">support tickets<" in r.text and ">insurance claims<" in r.text
+        assert ">RAG eval corpus<" in r.text and ">agent building<" in r.text
+        # The old industry framing is gone.
+        assert 'name="business"' not in r.text
+
+    def test_index_time_series_clause_is_optional(self, client):
+        # Time framing is optional: the period/granularity/trend sub-clause is
+        # hidden until "a time series" is chosen.
+        r = client.get("/")
+        assert 'name="time_shape"' in r.text
+        assert 'id="series-clause"' in r.text and "hidden" in r.text
+        assert "function toggleSeries" in r.text
 
     def test_index_carries_the_worked_example(self, client):
         r = client.get("/")
-        # The strong custom-prompt example is embedded in the describe textarea.
-        assert "advertising platform" in r.text.lower()
-        assert "roas" in r.text.lower()
+        # The worked example is now a SIM-representative support-ticket / triage
+        # agent dataset (embedded for the "load the worked example" button).
+        assert "triage agent" in r.text.lower()
+        assert "csat" in r.text.lower()
 
     def test_healthz(self, client):
         assert client.get("/healthz").status_code == 200
@@ -115,9 +167,9 @@ class TestPillCompose:
             {"name": "spend_usd", "type": "number", "faker": "pyfloat"},
         ]))
         r = client.post("/preview", data={
-            "business": "Advertising", "shape": "one-big-table", "year": "2025",
-            "growth": "seasonal", "variation": "high", "granularity": "daily",
-            "rows": "5000",
+            "record_type": "support tickets", "scenario": "agent building",
+            "shape": "one-big-table", "variation": "high",
+            "time_shape": "a flat record set", "rows": "5000",
         })
         assert r.status_code == 200
         assert "campaign_id" in r.text
@@ -130,7 +182,7 @@ class TestPillCompose:
             {"name": "id", "type": "integer", "faker": "random_int"},
             {"name": "tier", "type": "string", "enum": ["A", "B", "C"]},
         ]))
-        client.post("/preview", data={"business": "Marketing", "rows": "100"})
+        client.post("/preview", data={"record_type": "orders", "rows": "100"})
         # Far above the old 1k demo cap — must stream the full set.
         r = client.post("/download", data={"rows": "25000", "format": "csv", "seed": "7"})
         assert r.status_code == 200
@@ -142,7 +194,7 @@ class TestPillCompose:
         app = client.app
         _override(app, bedrock=bedrock_schema_stub(schema_fields=[
             {"name": "x", "type": "string", "faker": "word"}]))
-        client.post("/preview", data={"business": "Fintech", "rows": "10"})
+        client.post("/preview", data={"record_type": "financial transactions", "rows": "10"})
         r = client.post("/download", data={"rows": "3000", "format": "json", "seed": "1"})
         assert r.status_code == 200
         rows = json.loads(r.text)
@@ -158,7 +210,7 @@ class TestPillCompose:
         bedrock.converse.return_value["output"]["message"]["content"][0][
             "toolUse"]["input"]["name"] = 'evil"\r\nSet-Cookie: x=1'
         _override(app, bedrock=bedrock)
-        client.post("/preview", data={"business": "Retail", "rows": "10"})
+        client.post("/preview", data={"record_type": "orders", "rows": "10"})
         r = client.post("/download", data={"rows": "5", "format": "csv"})
         assert r.status_code == 200
         cd = r.headers["content-disposition"]
@@ -182,7 +234,7 @@ class TestDescribeCustom:
         r = client.post("/preview", data={
             "seed_mode": "custom",
             "prompt": "a marketplace with sellers, listings, and gross merchandise value",
-            "business": "B2B SaaS",  # pill default also submitted; custom mode wins
+            "record_type": "support tickets",  # pill default also submitted; custom mode wins
             "rows": "200",
         })
         assert r.status_code == 200
@@ -212,14 +264,14 @@ class TestSeedModeRouting:
         _override(app, bedrock=_bedrock_capture())
         client.post("/preview", data={
             "seed_mode": "pills",
-            "business": "Insurance",
+            "record_type": "insurance claims",
             # A stale, pre-filled-style prompt is still submitted by the form…
             "prompt": "A digital advertising platform's campaign performance dataset",
             "rows": "50",
         })
-        # …but pills mode ignores it: the composed prompt is the Insurance pills,
-        # not the advertising text.
-        assert "Insurance" in captured["text"]
+        # …but pills mode ignores it: the composed prompt is the insurance-claims
+        # record type, not the advertising text.
+        assert "insurance claims" in captured["text"].lower()
         assert "advertising" not in captured["text"].lower()
 
 
@@ -290,7 +342,8 @@ class TestScenario3UIPromptSeeded:
         )
         r = client.post(
             "/preview",
-            data={"prompt": "A B2B SaaS company's customer accounts with plan tier",
+            data={"seed_mode": "custom",
+                  "prompt": "A B2B SaaS company's customer accounts with plan tier",
                   "rows": "10"},
         )
         assert r.status_code == 200

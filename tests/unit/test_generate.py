@@ -141,6 +141,19 @@ class TestJson:
         assert isinstance(rows[0]["n"], int)
         assert isinstance(rows[0]["ok"], bool)
 
+    def test_json_serializes_decimal_provider(self, tmp_path):
+        # Regression: a model-chosen provider returning Decimal (e.g. pydecimal)
+        # must JSON-serialize — json.dumps cannot handle Decimal natively.
+        s = _schema([{"name": "amt", "type": "number", "faker": "pydecimal",
+                      "faker_args": {"left_digits": 5, "right_digits": 2, "positive": True}}])
+        res = run_generation(GenerateConfig(schema=s, rows=5, seed=1,
+                                            export_format="json", output_dir=str(tmp_path)))
+        rows = json.loads(Path(res["output"]["rows_path"]).read_text())
+        assert isinstance(rows[0]["amt"], float)
+        # stream_rows (the UI /download path) must also not raise.
+        text = "".join(stream_rows(s, 5, export_format="json", seed=1))
+        assert json.loads(text)
+
 
 class TestStreamRows:
     """stream_rows yields the full dataset without materializing it (UI download)."""

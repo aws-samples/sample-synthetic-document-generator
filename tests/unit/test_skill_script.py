@@ -148,6 +148,29 @@ class TestSelfContained:
         assert env_out["schema"] == 1
 
 
+class TestPresetsInlined:
+    """The bundler inlines every preset JSON; a forgotten regeneration after
+    adding/changing a preset must fail CI (drift guard)."""
+
+    def test_all_registry_presets_inlined(self, skill_script_exists):
+        from pocsynth import presets
+
+        blob = SKILL_SCRIPT.read_text(encoding="utf-8")
+        for name in (p["name"] for p in presets.list_presets()):
+            # Presets are embedded as a json.dumps(...) literal, so each preset's
+            # filename-key appears verbatim in the script.
+            assert name in blob, (
+                f"preset {name!r} not inlined in the skill script; "
+                "run `uv run python scripts/generate-skill-script.py`"
+            )
+
+    def test_presets_command_byte_equal(self, skill_script_exists):
+        a = _run_script(["--json", "presets"])
+        b = _run_installed(["--json", "presets"])
+        assert a.returncode == b.returncode == 0, (a.stderr, b.stderr)
+        assert a.stdout == b.stdout
+
+
 class TestPEP723Header:
     """Verify the generated script carries the metadata that makes it
     self-deploying via `uv run --script`."""

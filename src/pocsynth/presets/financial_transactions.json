@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "name": "financial_transactions",
+  "description": "Financial / payment transactions, one row per transaction (synthetic; seeds payments and fraud demos).",
+  "fields": [
+    {"name": "transaction_id", "type": "string", "faker": "uuid4", "description": "transaction identifier"},
+    {"name": "account_id", "type": "string", "regex": "ACCT-[0-9]{10}", "description": "account identifier"},
+    {"name": "amount", "type": "number", "faker": "pyfloat", "faker_args": {"min_value": 0.5, "max_value": 25000.0, "right_digits": 2}, "description": "transaction amount"},
+    {"name": "currency", "type": "string", "enum": ["USD", "EUR", "GBP", "JPY", "CAD", "AUD"], "weights": {"USD": 0.5, "EUR": 0.2, "GBP": 0.12, "JPY": 0.08, "CAD": 0.06, "AUD": 0.04}, "description": "ISO currency"},
+    {"name": "merchant_category", "type": "string", "enum": ["grocery", "dining", "travel", "fuel", "online", "utilities", "entertainment", "healthcare"], "weights": {"grocery": 0.2, "dining": 0.16, "travel": 0.1, "fuel": 0.12, "online": 0.18, "utilities": 0.1, "entertainment": 0.08, "healthcare": 0.06}, "description": "merchant category"},
+    {"name": "channel", "type": "string", "enum": ["card_present", "card_not_present", "ach", "wire", "wallet"], "weights": {"card_present": 0.4, "card_not_present": 0.3, "ach": 0.1, "wire": 0.05, "wallet": 0.15}, "description": "payment channel"},
+    {"name": "status", "type": "string", "enum": ["authorized", "settled", "declined", "refunded", "chargeback"], "weights": {"authorized": 0.25, "settled": 0.55, "declined": 0.1, "refunded": 0.07, "chargeback": 0.03}, "description": "transaction status"},
+    {"name": "is_fraud", "type": "boolean", "faker": "boolean", "faker_args": {"chance_of_getting_true": 2}, "description": "fraud label (rare positive)"},
+    {"name": "occurred_at", "type": "datetime", "faker": "date_time_this_month", "description": "transaction timestamp"}
+  ]
+}

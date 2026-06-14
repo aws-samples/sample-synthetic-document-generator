@@ -22,6 +22,7 @@ import json
 import re
 from collections import OrderedDict
 from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -136,7 +137,10 @@ def serialize(value: Any, ftype: str, fmt: str) -> Any:
         if isinstance(value, bool):
             return "true" if value else "false"
         return str(value)
-    # json: keep native scalars
+    # json: keep native scalars, but coerce Decimal (e.g. from faker.pydecimal)
+    # to float — json.dumps cannot serialize Decimal.
+    if isinstance(value, Decimal):
+        return float(value)
     return value
 
 
