@@ -345,7 +345,11 @@ def _build_run_command(mode: str, *, prompt: str | None, document_name: str | No
     args = ["run"]
     if mode == "document":
         # The browser has no local filesystem path; use an explicit placeholder.
-        args += ["--document", document_name or "<your-file.pdf>"]
+        # Shell-quote the uploaded filename — a name with spaces or shell
+        # metacharacters (e.g. "x'; rm -rf ~ #.pdf") must not produce a broken or
+        # injectable copy-pasteable command. The placeholder needs no quoting.
+        doc = shlex.quote(document_name) if document_name else "<your-file.pdf>"
+        args += ["--document", doc]
     else:
         args += ["--prompt", shlex.quote(prompt or "")]
     args += ["--rows", str(int(rows)), "--seed", str(int(seed)), "-o", "./out", "--yes"]
@@ -360,8 +364,8 @@ def _build_skill_request(mode: str, *, prompt: str | None, document_name: str | 
     if mode == "document":
         what = f"a synthetic dataset shaped like {document_name or 'my document'}"
     elif mode == "custom":
-        # The user's own description; trim for a readable one-liner.
-        desc = (prompt or "").strip().rstrip(".")
+        # The user's own description, collapsed to a single readable line.
+        desc = " ".join((prompt or "").split()).rstrip(".")
         what = f"a synthetic dataset of {desc}" if desc else "a synthetic dataset"
     else:  # pills — short, friendly phrasing rather than the long composed prompt
         what = "a synthetic dataset for this record type and scenario"

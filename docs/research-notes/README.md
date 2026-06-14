@@ -20,7 +20,6 @@ guidance and newer observations.
 
 ## Source
 
-Primary guidance adapted from the AWS ProServe AI/ML Practice "Synthetic Data"
-wiki (internal): `https://w.amazon.com/bin/view/AWS/Teams/Proserve/Intelligence/AIMLPractice/SyntheticData`
-(last modified ~4 years prior to these notes). Supplemented with notes relevant
-to this project (Bedrock-based PDF synthesis, PII redaction).
+Primary guidance adapted from internal AWS ProServe AI/ML Practice synthetic-data
+guidance, supplemented with notes relevant to this project (Bedrock-based PDF
+synthesis, PII redaction).

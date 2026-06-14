@@ -197,3 +197,24 @@ cython_debug/
 
 # Playwright MCP browser-test scratch (screenshots, uploaded fixtures)
 .playwright-mcp/
+
+# Generated/downloaded artifacts that must never be committed:
+#  - real source PDFs pulled in by demos/tests (may contain real content/PII)
+#  - generated datasets + their output dirs
+#  - the extract sample / PII-audit CSV (carry real values — not shareable)
+#  - ad-hoc screenshots
+# (The synthetic eval fixtures under skills/pocsynth/evals/fixtures/ are the one
+#  intentional exception — they're explicit "no real PII" placeholders.)
+aws-mp-contract*.pdf
+*_intake.pdf
+statement.pdf
+/out/
+**/rows.csv
+**/rows.json
+**/sample.json
+**/attestation.json
+pii-audit/
+**/*_pii_scan_audit.csv
+/screenshot*.png
+/*.png
+!assets/*.png

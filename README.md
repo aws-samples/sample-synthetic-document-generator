@@ -63,7 +63,7 @@ pocsynth run --document report.pdf --rows 10000 --yes -o ./out      # paid; extr
 
 # Or drive the stages by hand —
 # Fastest path — a bundled preset, zero AWS, instant:
-pocsynth presets                                            # 10 verticals: b2b_saas, crm_contacts, insurance_claims, security_telemetry, …
+pocsynth presets                                            # 15 record types: support_tickets, insurance_claims, financial_transactions, b2b_saas, …
 pocsynth generate --preset crm_contacts --rows 1000 --seed 42 -o ./out
 pocsynth test --rows ./out/rows.csv --schema ./out/schema.json
 
@@ -385,12 +385,14 @@ Every `--json` invocation produces exactly one JSON object on stdout, frozen at 
 | Exit | Category | Error codes |
 |---|---|---|
 | 0 | OK | — |
-| 2 | USAGE | `INVALID_ARGS` |
+| 1 | UNKNOWN | `INTERNAL_ERROR` |
+| 2 | USAGE | `INVALID_ARGS`, `SCHEMA_INVALID`, `PRICING_DATA_ERROR`, `COST_GATE_BLOCKED` |
 | 3 | INPUT | `INPUT_NOT_FOUND`, `INPUT_NOT_PDF`, `URL_REJECTED` |
 | 4 | AUTH | `AWS_AUTH_FAILED`, `AWS_AUTH_EXPIRED` |
-| 5 | UPSTREAM | `BEDROCK_ERROR`, `COMPREHEND_ERROR`, `HTTP_ERROR` |
+| 5 | UPSTREAM | `BEDROCK_ERROR`, `COMPREHEND_ERROR`, `HTTP_ERROR`, `EXTRACTION_FAILED` |
 | 6 | PARTIAL | `PARTIAL_SUCCESS` — some pages succeeded, some failed |
-| 1 | UNKNOWN | `INTERNAL_ERROR` |
+| 7 | DATA INVALID | `DATA_INVALID` — `test` found rows that violate the schema |
+| 8 | PII LEAK | `PII_LEAK_DETECTED` — `verify` found a real source value in the output (fail-closed) |
 
 `error.retryable: true` means "a blind retry may succeed" (5xx, throttling, timeouts). Auth errors are `retryable: false` — refresh credentials first.
 

@@ -372,6 +372,30 @@ class TestCommandPanel:
         # Rendered (HTML-escaped) command wraps the whole prompt in single quotes.
         assert "&#x27;tickets; rm -rf / now&#x27;" in r.text
 
+    def test_document_filename_is_shell_quoted(self):
+        # A malicious/odd uploaded filename must be shell-quoted in the command so
+        # a copy-paste can't run an injected command. (Unit-level: no Bedrock.)
+        import shlex
+
+        from pocsynth.ui.app import _build_run_command
+        cmd = _build_run_command("document", prompt=None,
+                                 document_name="x'; rm -rf ~ #.pdf", rows=5, seed=1)
+        toks = shlex.split(cmd)
+        i = toks.index("--document")
+        assert toks[i + 1] == "x'; rm -rf ~ #.pdf"   # recovered intact, one token
+        assert ";" not in toks                       # no stray command separator
+        # The missing-filename placeholder needs no quoting.
+        ph = _build_run_command("document", prompt=None, document_name=None, rows=5, seed=1)
+        assert "--document <your-file.pdf>" in ph
+
+    def test_skill_request_collapses_whitespace(self):
+        # A multi-line custom prompt must render as a single-line /pocsynth request.
+        from pocsynth.ui.app import _build_skill_request
+        sr = _build_skill_request("custom", prompt="line1\nline2\twith   spaces",
+                                  document_name=None, rows=10, seed=1)
+        assert "\n" not in sr and "\t" not in sr
+        assert sr.startswith("/pocsynth generate a synthetic dataset of line1 line2 with spaces")
+
 
 # --------------------------------------------------------------------------- #
 # Scenario C — match a real (PII-bearing) document, output stays clean

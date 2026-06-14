@@ -157,3 +157,19 @@ class TestLeakFieldNaming:
         _, leaks, _ = verify_values(
             {"3R5UAL4YUKPYGF1GZ"}, "x\n3R5UAL4YUKPYGF1GZ\n", schema=None)
         assert leaks and "field" not in leaks[0]
+
+
+class TestMalformedSchemaRobustness:
+    """verify is a safety gate — a malformed schema (e.g. a model-emitted
+    `fields: null`, or a non-list) must degrade gracefully, never crash."""
+
+    @pytest.mark.parametrize("schema", [
+        None, {}, {"fields": None}, {"fields": "notalist"},
+        {"fields": [None, "x", {"name": "a"}]}, {"fields": [{"enum": None}]},
+    ])
+    def test_verify_values_tolerates_bad_schema(self, schema):
+        verdict, leaks, scanned = verify_values(
+            {"secret_value_here"}, "rows with secret_value_here", schema)
+        # Still detects the rows leak; doesn't raise on the bad schema.
+        assert verdict == "fail"
+        assert any("rows" in lk["where"] for lk in leaks)

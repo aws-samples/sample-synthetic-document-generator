@@ -94,9 +94,10 @@ def _load_rows_text(path: Path, in_format: str | None) -> tuple[str, str]:
 
 def _schema_searchable_text(schema: dict[str, Any]) -> str:
     """The parts of a Schema a real value could leak into: enum values, regex
-    patterns, descriptions, names."""
+    patterns, descriptions, names. Tolerates a malformed schema (e.g. a model-
+    emitted `fields: null`) — verify is a safety gate and must never crash."""
     parts: list[str] = []
-    for f in schema.get("fields", []):
+    for f in schema.get("fields") or []:
         if not isinstance(f, dict):
             continue
         parts.append(str(f.get("name", "")))

@@ -43,7 +43,7 @@
 - Miscellaneous lists of ML datasets
 - AWS open data repository (multi-vertical)
 
-## Source page
+## Source
 
-- AWS ProServe AI/ML Practice — *Synthetic Data* (internal wiki):
-  `https://w.amazon.com/bin/view/AWS/Teams/Proserve/Intelligence/AIMLPractice/SyntheticData`
+- Adapted from internal AWS ProServe AI/ML Practice synthetic-data guidance,
+  supplemented with notes specific to this project.
