@@ -66,8 +66,8 @@ Personas are split by **trust boundary** (where the tool runs and whose data see
 job title — that split drives what each one needs.
 
 **SA** (Solutions Architect, sandbox):
-Runs pocsynth in an AWS sandbox/Isengard account to build or demo a prototype. Seeds only from a
-**Preset** or a **Prompt** — never real customer data (real data in a non-prod account is a
+Runs pocsynth in an AWS sandbox/non-production account to build or demo a prototype. Seeds only
+from a **Preset** or a **Prompt** — never real customer data (real data in a non-prod account is a
 reportable security incident). Optimizes for speed, believability, cost control, and a
 safe-to-share artifact.
 _Avoid_: "internal user". A **Customer-runner** is not an SA even when they're an Amazon engineer.
