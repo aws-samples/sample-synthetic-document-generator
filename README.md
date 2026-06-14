@@ -496,12 +496,11 @@ This tool is a PoC accelerator. Follow your organization's internal security and
 2. Run in a dedicated non-production AWS account with no access to production customer data.
 3. Exchange customer-confidential material only through your organization's approved secure-sharing channels.
 4. Route medium- or high-risk code through your organization's content / code-security review process.
-5. Prefer screenshare for demos.
-6. Deliver code to customers through your organization's approved distribution channel.
-7. Not intended for PCI data or any credit-card / financial information protected by law.
-8. Do not store or process PII, PHI, or other sensitive personal data within a development environment.
-9. Dispose of code, synthetic data, and artifacts once the PoC work is complete.
-10. For any access to real customer data (even non-sensitive), obtain explicit permission through the appropriate channels first.
+5. Deliver code to customers through your organization's approved distribution channel.
+6. Not intended for PCI data or any credit-card / financial information protected by law.
+7. Do not store or process PII, PHI, or other sensitive personal data within a development environment.
+8. Dispose of code, synthetic data, and artifacts once the PoC work is complete.
+9. For any access to real customer data (even non-sensitive), obtain explicit permission through the appropriate channels first.
 
 **PoC ≠ handling customer data.**
 
