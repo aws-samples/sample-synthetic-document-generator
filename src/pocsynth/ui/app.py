@@ -504,10 +504,12 @@ def create_app() -> FastAPI:
                         status_code=413,
                     )
                 text = _pdf_text(pdf_bytes)
+                # ONE Comprehend pass over the whole document; field-level PII
+                # flags are derived from it (no second per-field scan).
                 detected = scan_for_pii(text, folder_name=str(tdp / "pii-audit"),
                                         filename="upload", comprehend=comprehend)
                 field_values = _parse_field_values(text)
-                pii_fields = _pii_field_names(text, comprehend)
+                pii_fields = _pii_field_names(field_values, detected)
                 real_pii_values = _real_pii_from_scan(detected)
                 pii_entities = len(detected)
                 # Map each real value to the field it came from, so a leak can
@@ -523,14 +525,16 @@ def create_app() -> FastAPI:
                 )
                 # Carry the real per-field values into value_counts so the PII
                 # guard (ADR-0005) can strip them at schema-design time — instead
-                # of relying solely on the downstream verify backstop.
+                # of relying solely on the downstream verify backstop. Reuse the
+                # already-parsed field names (generic fallback when none parsed).
+                field_names = list(field_values) or _GENERIC_FIELDS
                 sample = {
                     "schema": 1, "source": seed_document.filename or "upload",
                     "fields": [
                         {"name": w, "type_hint": "string",
                          "value_counts": _value_counts(field_values.get(w, [])),
                          "pii": w in pii_fields}
-                        for w in _candidate_fields(text)
+                        for w in field_names
                     ],
                 }
                 sample_path = tdp / "sample.json"
@@ -598,8 +602,11 @@ def create_app() -> FastAPI:
             _ATTESTATION_STORE.pop(sid, None)
 
         # Command-equivalent panel: the CLI + agent-skill commands that reproduce
-        # this dataset (CONTEXT: Command equivalent).
-        cmd_mode = "document" if seeded_from_document else ("custom" if prompt else "pills")
+        # this dataset (CONTEXT: Command equivalent). Derive the mode from the
+        # active seed tab — the same signal the seed routing keyed on above — so a
+        # document upload that also carried a stale prompt can't mislabel itself.
+        cmd_mode = ("document" if seeded_from_document
+                    else "custom" if seed_mode == "custom" else "pills")
         commands_html = _render_command_panel(
             cmd_mode, prompt=command_prompt, document_name=document_name,
             rows=rows, seed=seed,
@@ -740,18 +747,9 @@ def _pdf_text(pdf_bytes: bytes) -> str:
         return "\n".join(page.get_text("text") for page in doc)
 
 
-def _candidate_fields(text: str) -> list[str]:
-    """Heuristic: 'Label: value' lines become candidate field names. Falls back
-    to a generic set so the demo always produces a schema."""
-    import re
-    fields: list[str] = []
-    for line in text.splitlines():
-        m = re.match(r"\s*([A-Za-z][A-Za-z _]{1,40}):", line)
-        if m:
-            name = m.group(1).strip().lower().replace(" ", "_")
-            if name not in fields:
-                fields.append(name)
-    return fields or ["full_name", "email", "amount", "status"]
+# Generic fallback fields when a document has no parseable `Label: value` lines,
+# so the demo always produces a schema.
+_GENERIC_FIELDS = ["full_name", "email", "amount", "status"]
 
 
 def _parse_field_values(text: str) -> dict[str, list[str]]:
@@ -783,17 +781,27 @@ def _value_counts(values: list[str]) -> dict[str, int]:
     return counts
 
 
-def _pii_field_names(text: str, comprehend) -> set[str]:
-    """Flag fields whose values Comprehend marks as PII.
+def _pii_field_names(field_values: dict[str, list[str]], detected: list[dict]) -> set[str]:
+    """Flag fields whose values Comprehend marked as PII, derived from the SINGLE
+    whole-document scan (`scan_for_pii`) — no second per-field Comprehend pass.
 
-    Delegates to extract._pii_fields, which scans ONE concatenated request per
-    field (not one per line) — the same batched logic the CLI extract stage uses.
+    The whole-doc scan already covers every field's text (with more surrounding
+    context than per-field chunks), so a field is PII when one of its parsed
+    values contains a detected entity value. Avoids N extra API calls per upload.
     """
-    from pocsynth.extract import _pii_fields
-
-    by_field = _parse_field_values(text)
-    records = [{name: " ".join(vals)} for name, vals in by_field.items()]
-    return _pii_fields(records, comprehend)
+    flagged: set[str] = set()
+    pii_values = {
+        str(ent.get("Value", "")).strip()
+        for ent in detected
+        if len(str(ent.get("Value", "")).strip()) >= MIN_PII_VALUE_LEN
+    }
+    if not pii_values:
+        return flagged
+    for name, values in field_values.items():
+        blob = " ".join(values)
+        if any(pv in blob for pv in pii_values):
+            flagged.add(name)
+    return flagged
 
 
 def _opts(values, *, default=None, labels=None) -> str:
@@ -1012,7 +1020,8 @@ _INDEX_HTML = """<!DOCTYPE html>
     </div>
     <div class="seedpane" data-seed="upload">
       <div class="egress">⚠ Your document is uploaded and its text is sent to
-        <b>Amazon Comprehend</b> (PII detection); the field structure is sent to
+        <b>Amazon Comprehend</b> (PII detection); the field names
+        <b>and a sample of their actual values</b> are sent to
         <b>Amazon Bedrock</b> (schema design) in your AWS account. Don't upload
         data you aren't authorized to send to those services.</div>
       <label>Upload a real document to mirror its shape. The values are audited

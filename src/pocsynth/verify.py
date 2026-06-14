@@ -97,15 +97,18 @@ def _schema_searchable_text(schema: dict[str, Any]) -> str:
     patterns, descriptions, names. Tolerates a malformed schema (e.g. a model-
     emitted `fields: null`) — verify is a safety gate and must never crash."""
     parts: list[str] = []
-    for f in schema.get("fields") or []:
+    fields = schema.get("fields")
+    for f in fields if isinstance(fields, list) else []:
         if not isinstance(f, dict):
             continue
         parts.append(str(f.get("name", "")))
         parts.append(str(f.get("description", "")))
         parts.append(str(f.get("regex", "")))
-        for v in f.get("enum", []) or []:
+        enum = f.get("enum")
+        for v in enum if isinstance(enum, list) else []:
             parts.append(str(v))
-        for k in (f.get("weights") or {}):
+        weights = f.get("weights")
+        for k in (weights if isinstance(weights, dict) else {}):
             parts.append(str(k))
     return "\n".join(parts)
 

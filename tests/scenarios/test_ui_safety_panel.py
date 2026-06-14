@@ -194,3 +194,36 @@ class TestSyntheticSeedNoPanel:
         client.post("/preview", data={"business": "Retail", "rows": "10"})
         r = client.post("/download", data={"rows": "20", "format": "csv", "seed": "1"})
         assert r.status_code == 200
+
+
+class TestSinglePassPiiFieldDerivation:
+    """Field-level PII flags are derived from the ONE whole-document Comprehend
+    scan (no second per-field pass). A field is flagged iff one of its parsed
+    values contains a detected entity value."""
+
+    def test_flags_only_fields_carrying_a_detected_value(self):
+        from pocsynth.ui.app import _pii_field_names
+
+        field_values = {
+            "patient": ["Alice Hernandez"],
+            "state": ["CA"],
+            "ssn": ["555-22-7788"],
+        }
+        # Whole-doc scan flagged the name and the SSN, not the state code.
+        detected = [
+            {"Value": "Alice Hernandez"},
+            {"Value": "555-22-7788"},
+        ]
+        assert _pii_field_names(field_values, detected) == {"patient", "ssn"}
+
+    def test_short_detected_values_ignored(self):
+        from pocsynth.ui.app import _pii_field_names
+
+        # A sub-MIN_PII_VALUE_LEN detected value is a false-positive risk and is
+        # not used to flag a field.
+        assert _pii_field_names({"code": ["CA"]}, [{"Value": "CA"}]) == set()
+
+    def test_no_detected_pii_flags_nothing(self):
+        from pocsynth.ui.app import _pii_field_names
+
+        assert _pii_field_names({"a": ["x" * 8], "b": ["y" * 8]}, []) == set()

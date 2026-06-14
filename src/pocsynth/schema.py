@@ -133,14 +133,16 @@ def serialize(value: Any, ftype: str, fmt: str) -> Any:
             value = value.isoformat()
         value = str(value)
         return value  # already a string in both formats
+    # Coerce Decimal (e.g. from faker.pydecimal) to float in BOTH formats so the
+    # same value renders identically: JSON can't serialize Decimal, and a raw
+    # str(Decimal) in CSV ("123.40") would diverge from the JSON float (123.4).
+    if isinstance(value, Decimal):
+        value = float(value)
     if fmt == "csv":
         if isinstance(value, bool):
             return "true" if value else "false"
         return str(value)
-    # json: keep native scalars, but coerce Decimal (e.g. from faker.pydecimal)
-    # to float — json.dumps cannot serialize Decimal.
-    if isinstance(value, Decimal):
-        return float(value)
+    # json: keep native scalars.
     return value
 
 

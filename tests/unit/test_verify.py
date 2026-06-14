@@ -166,6 +166,11 @@ class TestMalformedSchemaRobustness:
     @pytest.mark.parametrize("schema", [
         None, {}, {"fields": None}, {"fields": "notalist"},
         {"fields": [None, "x", {"name": "a"}]}, {"fields": [{"enum": None}]},
+        # Truthy non-iterables must not crash the `for f in fields` loop, and a
+        # truthy non-list enum/weights must not crash the inner loops.
+        {"fields": 5}, {"fields": True},
+        {"fields": [{"name": "a", "enum": "CA", "weights": "x"}]},
+        {"fields": [{"enum": 7, "weights": 3}]},
     ])
     def test_verify_values_tolerates_bad_schema(self, schema):
         verdict, leaks, scanned = verify_values(

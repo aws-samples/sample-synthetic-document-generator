@@ -176,6 +176,9 @@ class TestPageAndPills:
         assert "your AWS account" in text
         # The "Match a document" tab no longer claims safety.
         assert "Match a document" in text
+        # Path-accurate disclosure: a sample of the real VALUES (not just the
+        # field structure) is sent to Bedrock — value_counts egress in /preview.
+        assert "sample of their actual values" in text
 
 
 # --------------------------------------------------------------------------- #

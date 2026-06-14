@@ -323,7 +323,7 @@ def _run_schema_from_sample(cfg: RunConfig, sample_path: str, out_dir: str, emit
     res = run_schema(
         SchemaConfig(
             sample_path=sample_path, model_key=cfg.model_key, distribution="auto",
-            max_tokens=cfg.max_tokens, output_dir=out_dir,
+            locale=cfg.locale, max_tokens=cfg.max_tokens, output_dir=out_dir,
             region=cfg.region, profile=cfg.profile,
         ),
         on_event=lambda n, **p: emit(n, **p),
@@ -341,7 +341,7 @@ def _run_schema_from_prompt(cfg: RunConfig, out_dir: str, emit):
     res = run_schema(
         SchemaConfig(
             prompt=cfg.prompt, model_key=cfg.model_key, distribution="auto",
-            max_tokens=cfg.max_tokens, output_dir=out_dir,
+            locale=cfg.locale, max_tokens=cfg.max_tokens, output_dir=out_dir,
             region=cfg.region, profile=cfg.profile,
         ),
         on_event=lambda n, **p: emit(n, **p),

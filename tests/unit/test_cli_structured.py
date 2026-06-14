@@ -295,6 +295,21 @@ class TestRunCommand:
             "--rows", "5", "--seed", "1", "-o", str(tmp_path)])
         assert result.exit_code == 0, result.stderr
 
+    def test_document_egress_notice_omits_comprehend_when_no_pii_audit(self, tmp_path):
+        # The human-mode egress notice is printed BEFORE any file/AWS work, so a
+        # nonexistent path still emits it (the pipeline then fails on input).
+        # Regression: the notice must name only the services that actually run —
+        # --no-pii-audit skips Comprehend, so it must NOT be advertised.
+        missing = str(tmp_path / "nope.pdf")
+        with_audit = runner.invoke(app, ["run", "--document", missing,
+                                         "-o", str(tmp_path)])
+        assert "Amazon Bedrock (extraction)" in with_audit.stderr
+        assert "Amazon Comprehend (PII audit)" in with_audit.stderr
+        without = runner.invoke(app, ["run", "--document", missing,
+                                      "--no-pii-audit", "-o", str(tmp_path)])
+        assert "Amazon Bedrock (extraction)" in without.stderr
+        assert "Amazon Comprehend" not in without.stderr
+
 
 @pytest.mark.parametrize("cmd", [
     ["generate", "--help"], ["test", "--help"], ["verify", "--help"],

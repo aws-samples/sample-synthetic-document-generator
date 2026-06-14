@@ -34,31 +34,55 @@ class TestDeterminism:
         assert (a / "rows.csv").read_bytes() == (b / "rows.csv").read_bytes()
 
     def test_relative_date_fields_seed_reproducible_across_clock(self, monkeypatch):
-        # Regression: Faker's relative-date providers (date_this_year,
-        # date_of_birth, date_time_this_month, …) anchor on datetime.now(), so a
-        # seeded run must freeze the clock or the same seed yields different
-        # absolute dates on different runs. Simulate the wall clock advancing
-        # between two seeded runs and require byte-identical output.
+        # Regression: Faker's relative-date providers anchor on the live clock —
+        # date_time_this_* / date_of_birth read datetime.now(); date_this_* read
+        # date.today() (a SEPARATE module global). A seeded run must freeze BOTH
+        # or the same seed yields different absolute dates on different runs.
+        # Advance both clocks between two seeded runs and require identical output.
+
         import faker.providers.date_time as _dt
 
         s = _schema([
-            {"name": "dob", "type": "date", "faker": "date_of_birth"},
-            {"name": "seen", "type": "datetime", "faker": "date_time_this_year"},
-            {"name": "made", "type": "date", "faker": "date_this_decade"},
+            {"name": "dob", "type": "date", "faker": "date_of_birth"},          # now()
+            {"name": "seen", "type": "datetime", "faker": "date_time_this_year"},  # now()
+            {"name": "yr", "type": "date", "faker": "date_this_year"},          # today()  ← the gap
+            {"name": "decade", "type": "date", "faker": "date_this_decade"},    # today()
         ])
         clock = {"t": datetime(2025, 3, 1, 9, 0, 0)}
-        real = _dt.datetime
+        real_dt, real_date = _dt.datetime, _dt.dtdate
 
-        class _Advancing(real):
+        class _AdvancingDT(real_dt):
             @classmethod
             def now(cls, tz=None):
-                clock["t"] += timedelta(seconds=37)  # time moves between calls
+                clock["t"] += timedelta(seconds=37)
                 return clock["t"] if tz is None else clock["t"].replace(tzinfo=tz)
 
-        monkeypatch.setattr(_dt, "datetime", _Advancing)
+        class _AdvancingDate(real_date):
+            @classmethod
+            def today(cls):
+                clock["t"] += timedelta(days=1)   # today() drifts across runs too
+                return clock["t"].date()
+
+        monkeypatch.setattr(_dt, "datetime", _AdvancingDT)
+        monkeypatch.setattr(_dt, "dtdate", _AdvancingDate)
         a = "".join(stream_rows(s, 30, export_format="csv", seed=7))
         b = "".join(stream_rows(s, 30, export_format="csv", seed=7))
         assert a == b, "seeded relative-date output drifted with the wall clock"
+
+    def test_seeded_timestamps_have_variance(self):
+        # Regression: the seeded anchor must be MID-period — a period-start anchor
+        # (Jan 1 00:00) collapses date_time_this_year/month to a single instant,
+        # emitting the SAME timestamp on every row. Require real spread.
+        import csv
+        import io
+        s = _schema([
+            {"name": "y", "type": "datetime", "faker": "date_time_this_year"},
+            {"name": "m", "type": "datetime", "faker": "date_time_this_month"},
+        ])
+        rows = list(csv.DictReader(io.StringIO(
+            "".join(stream_rows(s, 100, export_format="csv", seed=42)))))
+        assert len({r["y"] for r in rows}) > 50, "date_time_this_year has no variance"
+        assert len({r["m"] for r in rows}) > 50, "date_time_this_month has no variance"
 
     def test_row_count_and_headers(self, tmp_path):
         s = _schema([{"name": "x", "type": "integer", "faker": "random_int"},
@@ -153,6 +177,24 @@ class TestJson:
         # stream_rows (the UI /download path) must also not raise.
         text = "".join(stream_rows(s, 5, export_format="json", seed=1))
         assert json.loads(text)
+
+    def test_decimal_csv_and_json_render_identically(self):
+        # Regression: a Decimal must serialize to the SAME numeric value in CSV
+        # and JSON. CSV used to emit raw str(Decimal) ("123.40") while JSON
+        # coerced to float (123.4) — the two formats diverged for the same seed.
+        import csv
+        import io
+        s = _schema([{"name": "amt", "type": "number", "faker": "pydecimal",
+                      "faker_args": {"left_digits": 4, "right_digits": 2, "positive": True}}])
+        csv_rows = list(csv.DictReader(io.StringIO(
+            "".join(stream_rows(s, 20, export_format="csv", seed=3)))))
+        json_rows = json.loads("".join(stream_rows(s, 20, export_format="json", seed=3)))
+        # Same seed → same draws; the numeric values must match exactly.
+        for c, j in zip(csv_rows, json_rows):
+            assert float(c["amt"]) == j["amt"]
+            assert isinstance(j["amt"], float)
+            # CSV carries the float repr, not the Decimal repr (no trailing zero).
+            assert c["amt"] == repr(j["amt"])
 
 
 class TestStreamRows:

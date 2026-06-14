@@ -830,10 +830,10 @@ def run(
     (ADR-0011): paid paths require --yes above the cost gate; the document path
     runs verify and exits 8 (NOT cleared for sharing) if a real value leaked.
 
-    --document sends the document to Amazon Bedrock (extraction) and Amazon
-    Comprehend (PII audit) in your AWS account. Leak detection is best-effort —
-    review the output before sharing. --prompt sends only your description text
-    to Bedrock. --preset touches no AWS.
+    --document sends the document to Amazon Bedrock (extraction) and, unless
+    --no-pii-audit, Amazon Comprehend (PII audit) in your AWS account. Leak
+    detection is best-effort — review the output before sharing. --prompt sends
+    only your description text to Bedrock. --preset touches no AWS.
     """
     from pocsynth.run import RunConfig, run_pipeline
 
@@ -843,10 +843,12 @@ def run(
     # Human-mode data-egress notice (paid paths only; JSON contract unchanged).
     if not json_mode:
         if document:
+            services = ("Amazon Bedrock (extraction) and Amazon Comprehend (PII audit)"
+                        if pii_audit else "Amazon Bedrock (extraction)")
             _stderr.print(
-                f"[yellow]notice:[/] sending {document!r} to Amazon Bedrock "
-                "(extraction) and Amazon Comprehend (PII audit) in your AWS account. "
-                "Leak detection is best-effort — review the output before sharing."
+                f"[yellow]notice:[/] sending {document!r} to {services} in your "
+                "AWS account. Leak detection is best-effort — review the output "
+                "before sharing."
             )
         elif prompt:
             _stderr.print(

@@ -13,10 +13,12 @@ import csv
 import io
 import json
 import re
+import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date as _date
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -30,12 +32,27 @@ from pocsynth.errors import SchemaError
 EventCallback = Callable[..., None] | None
 
 # A fixed reference instant for seeded generation. Faker's relative-date
-# providers (date_this_year, date_of_birth, date_time_this_month, …) anchor on
-# datetime.now(), so without this the same seed produces different absolute
-# dates on different runs — breaking the byte-reproducibility `--seed` promises.
-# We freeze "now" to this instant whenever a seed is set; unseeded runs keep the
-# live clock.
-_SEEDED_NOW = datetime(2025, 1, 1, 0, 0, 0)
+# providers anchor on the current clock — `date_time_this_*` / `date_of_birth`
+# read `datetime.now()`, while `date_this_year` / `date_this_month` /
+# `date_this_decade` read `date.today()` — so without pinning, the same seed
+# produces different absolute dates on different runs, breaking the
+# byte-reproducibility `--seed` promises. We freeze BOTH clocks to this instant
+# when a seed is set; unseeded runs keep the live clock.
+#
+# The anchor is MID-year and MID-month on purpose: `*_this_year`/`*_this_month`
+# default to the range [period_start, now], so a period-start anchor (e.g.
+# Jan 1 00:00) would collapse that range to a single instant and emit the SAME
+# timestamp on every row. Mid-period leaves real span in both directions.
+_SEEDED_NOW = datetime(2025, 7, 1, 12, 0, 0)
+_SEEDED_TODAY = _date(2025, 7, 1)
+
+# Faker mutates a process-global module attribute, so concurrent generations
+# (the UI runs sync endpoints in a threadpool) must not race on the patch. We
+# serialize seeded generation behind this lock and use a depth counter so the
+# real classes are restored exactly once, on the outermost exit — never
+# re-capturing an already-frozen class as "real".
+_clock_lock = threading.RLock()
+_clock_depth = 0
 
 
 def _noop(*_a, **_k) -> None:
@@ -44,26 +61,58 @@ def _noop(*_a, **_k) -> None:
 
 @contextlib.contextmanager
 def _frozen_clock(enabled: bool):
-    """Pin Faker's date-provider clock to _SEEDED_NOW so seeded date/datetime
-    fields are byte-reproducible regardless of wall-clock time. No-op when
-    disabled (unseeded runs). Restores the real datetime on exit."""
+    """Pin Faker's date-provider clocks (`datetime.now()` AND `date.today()`) to
+    the fixed seeded anchor so seeded date/datetime fields are byte-reproducible
+    regardless of wall-clock time. No-op when disabled (unseeded runs).
+
+    Process-global and reentrancy-safe: held under a lock for the block's
+    duration and restored to the genuine stdlib classes exactly once."""
+    global _clock_depth
     if not enabled:
         yield
         return
     import faker.providers.date_time as _dt
 
-    real = _dt.datetime
+    with _clock_lock:
+        if _clock_depth == 0:
+            # Replace the module's `datetime` and `dtdate` globals with frozen
+            # subclasses. Faker's own helpers do `isinstance(value, (datetime,
+            # dtdate))` against these globals, and genuine datetime/date values
+            # flow through them — so each subclass uses a metaclass whose
+            # __instancecheck__ also accepts the genuine class, or those checks
+            # would reject real values (causing a ParseError).
+            class _DateMeta(type):
+                def __instancecheck__(cls, inst):
+                    return isinstance(inst, _date)
 
-    class _Frozen(real):  # type: ignore[misc, valid-type]
-        @classmethod
-        def now(cls, tz=None):
-            return _SEEDED_NOW if tz is None else _SEEDED_NOW.replace(tzinfo=tz)
+            class _DateTimeMeta(type):
+                def __instancecheck__(cls, inst):
+                    return isinstance(inst, datetime)
 
-    _dt.datetime = _Frozen
-    try:
-        yield
-    finally:
-        _dt.datetime = real
+            class _FrozenDate(_date, metaclass=_DateMeta):
+                @classmethod
+                def today(cls):
+                    return _SEEDED_TODAY
+
+            class _FrozenDateTime(datetime, metaclass=_DateTimeMeta):
+                @classmethod
+                def now(cls, tz=None):
+                    return _SEEDED_NOW if tz is None else _SEEDED_NOW.replace(tzinfo=tz)
+
+            # Capture the genuine stdlib classes (imported at top), never whatever
+            # is currently installed, so restore can't leave a _Frozen behind.
+            _dt._pocsynth_real_dt = datetime
+            _dt._pocsynth_real_date = _date
+            _dt.datetime = _FrozenDateTime
+            _dt.dtdate = _FrozenDate
+        _clock_depth += 1
+        try:
+            yield
+        finally:
+            _clock_depth -= 1
+            if _clock_depth == 0:
+                _dt.datetime = _dt._pocsynth_real_dt
+                _dt.dtdate = _dt._pocsynth_real_date
 
 
 # A compact, deterministic regex->string generator (Faker 37 has no regexify).

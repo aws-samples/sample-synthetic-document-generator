@@ -48,6 +48,7 @@ class SchemaConfig:
     prompt: str | None = None
     distribution: str = "auto"  # auto | infer | synthetic | uniform
     model_key: str = "sonnet"
+    locale: str = "en_US"       # the Faker locale generation will use
     fix: bool = False
     max_tokens: int = 8000
     output_dir: str | None = None
@@ -107,30 +108,45 @@ _FALLBACK_BY_TYPE = {
 }
 
 
-def _sanitize_providers(schema: dict) -> list[dict]:
+def _sanitize_providers(schema: dict, locale: str = "en_US") -> list[dict]:
     """Coerce model-proposed `faker` values that aren't real bare providers to a
     type-appropriate fallback, so a recoverable model quirk (a hallucinated
     `book.title`, a dotted/namespaced name, or a call expression like
     `bothify(...)`) never hard-fails generation. Returns lint-style notes.
 
-    Fields already bound by `enum`/`regex` keep those (they win in generation);
-    only a leftover invalid `faker` on such a field is dropped.
+    Validates against the SAME locale generation will use (not always en_US), so
+    a provider valid in one locale but absent in another can't pass here and then
+    hard-fail at generation. When a `faker` is coerced or dropped, any stale
+    `faker_args` (which belonged to the original provider) is also removed so the
+    fallback isn't called with arguments it doesn't accept. An empty `enum`/
+    `weights` is treated as absent — generation keys on key presence, so an empty
+    list left in place would crash `random_element([])`.
     """
     from pocsynth.generate import valid_faker_providers
 
-    valid = valid_faker_providers()
+    valid = valid_faker_providers(locale)
     notes: list[dict] = []
     for f in schema.get("fields", []):
+        # Drop an empty enum/weights — generation does `if "enum" in field`, so an
+        # empty list would survive and crash `random_element(elements=[])`.
+        if "enum" in f and not f.get("enum"):
+            f.pop("enum", None)
+            f.pop("weights", None)
+            f.pop("weights_source", None)
         faker = f.get("faker")
         if not faker or faker in valid:
             continue
         if f.get("enum") or f.get("regex"):
             # enum/regex already drives this field; just drop the bad faker.
             f.pop("faker", None)
+            f.pop("faker_args", None)
             fixed_to = "enum" if f.get("enum") else "regex"
         else:
             fixed_to = _FALLBACK_BY_TYPE.get(f.get("type", "string"), "word")
             f["faker"] = fixed_to
+            # The old args belonged to the invalid provider; the fallback won't
+            # accept them. Drop them so generation doesn't TypeError.
+            f.pop("faker_args", None)
         notes.append({
             "field": f["name"], "issue": "invalid_faker_provider_coerced",
             "severity": "warning",
@@ -235,7 +251,7 @@ def run_schema(cfg: SchemaConfig, on_event: EventCallback = None) -> dict[str, A
     if mode in ("infer", "from_prompt"):
         # Coerce invalid model-proposed providers FIRST so the paid call never
         # hard-fails on a recoverable quirk (e.g. a hallucinated `book.title`).
-        provider_notes = _sanitize_providers(schema)
+        provider_notes = _sanitize_providers(schema, cfg.locale)
         pii_notes = _apply_pii_guard(schema, sample_pii)
         dist_mode = cfg.distribution
         # from_prompt has no counts → infer/auto degrade to synthetic.

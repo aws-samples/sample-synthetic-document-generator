@@ -113,6 +113,49 @@ class TestProviderSanitization:
                                             output_dir=str(tmp_path / "g")))
         assert gen["output"]["rows_written"] == 10
 
+    def test_stale_faker_args_dropped_when_provider_coerced(self, tmp_path):
+        # Regression: the model emits an invalid provider WITH args that only
+        # made sense for it (book.title takes no args). Coercing faker→word
+        # while leaving faker_args in place calls word(nb_words=3) → TypeError
+        # deep in generation. The stale args must be dropped with the provider.
+        from pocsynth.generate import GenerateConfig, run_generation
+
+        client = _emit_schema_client([
+            {"name": "title", "type": "string", "faker": "book.title",
+             "faker_args": {"nb_words": 3}},
+            {"name": "price", "type": "number", "faker": "money.amount",
+             "faker_args": {"left_digits": 4}},
+        ])
+        res = run_schema(SchemaConfig(prompt="a catalog",
+                                      output_dir=str(tmp_path / "o"), bedrock_client=client))
+        schema = json.loads(Path(res["output"]["schema_path"]).read_text())
+        # The fallback provider carries no leftover args from the invalid one.
+        assert all("faker_args" not in f for f in schema["fields"])
+        # Generation runs to completion instead of raising TypeError.
+        gen = run_generation(GenerateConfig(schema=schema, rows=8, seed=1,
+                                            output_dir=str(tmp_path / "g")))
+        assert gen["output"]["rows_written"] == 8
+
+    def test_empty_enum_with_invalid_faker_does_not_crash_generation(self, tmp_path):
+        # Regression: the model emits an empty enum:[] alongside an invalid
+        # faker. Generation keys on key PRESENCE (`if "enum" in field`), so an
+        # empty list left in place crashes random_element(elements=[]) with
+        # "Cannot choose from an empty sequence". The sanitizer must drop the
+        # empty enum so the (coerced) faker drives the field instead.
+        from pocsynth.generate import GenerateConfig, run_generation
+
+        client = _emit_schema_client([
+            {"name": "status", "type": "string", "faker": "book.genre", "enum": []},
+        ])
+        res = run_schema(SchemaConfig(prompt="tickets",
+                                      output_dir=str(tmp_path / "o"), bedrock_client=client))
+        schema = json.loads(Path(res["output"]["schema_path"]).read_text())
+        f = schema["fields"][0]
+        assert not f.get("enum")  # empty enum dropped, not left to crash
+        gen = run_generation(GenerateConfig(schema=schema, rows=6, seed=1,
+                                            output_dir=str(tmp_path / "g")))
+        assert gen["output"]["rows_written"] == 6
+
 
 class TestFromPromptMode:
     def test_from_prompt_no_counts_downgrades_infer(self, tmp_path):
