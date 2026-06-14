@@ -9,14 +9,18 @@ patterns, descriptions — the Schema is shared too) against the real PII values
 recorded in the originating **Sample**, and emits an **Attestation** (ADR-0010).
 
 Matching is on the Comprehend-flagged PII values from the Sample, by exact
-whole-value containment — not blanket substring scanning. Non-PII real values
-(state codes, plan tiers) are *allowed* to survive as enums by design, so they
-are not scanned. Offline, free, no AWS.
+whole-value containment — not blanket substring scanning. The rows are scanned
+both as raw serialized text and as decoded cell values, so a value that leaked
+into a cell can't hide behind CSV quote-doubling or JSON escaping. Non-PII real
+values (state codes, plan tiers) are *allowed* to survive as enums by design, so
+they are not scanned. Offline, free, no AWS.
 """
 
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -80,6 +84,36 @@ def _real_pii_values(sample: dict[str, Any], min_len: int) -> set[str]:
     return values
 
 
+def _real_value_fields(sample: dict[str, Any], min_len: int) -> dict[str, str]:
+    """Map each real PII value to the Sample field it came from, so a leak can
+    name the offending field. Mirrors `_real_pii_values`' extraction rules; the
+    first field a value appears under wins (a value rarely repeats across fields).
+    """
+    mapping: dict[str, str] = {}
+    fields = sample.get("fields")
+    records = sample.get("records")
+    if isinstance(fields, list):  # discovery sample
+        for f in fields:
+            if not isinstance(f, dict) or not f.get("pii"):
+                continue
+            name = str(f.get("name", "")) or "?"
+            for v in (f.get("value_counts") or {}):
+                s = str(v).strip()
+                if len(s) >= min_len:
+                    mapping.setdefault(s, name)
+    elif isinstance(records, list):  # conform sample
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            for k, v in rec.items():
+                if v is None:
+                    continue
+                s = str(v).strip()
+                if len(s) >= min_len:
+                    mapping.setdefault(s, str(k))
+    return mapping
+
+
 # --------------------------------------------------------------------------- #
 # Scanning
 # --------------------------------------------------------------------------- #
@@ -113,6 +147,43 @@ def _schema_searchable_text(schema: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def _decoded_rows_text(rows_text: str) -> str:
+    """The rows' DECODED cell values, joined — so a real value that leaked into a
+    cell survives format escaping in the scan. A raw substring scan over the
+    serialized text misses `Robert "Bob" Smith` because CSV writes it as
+    `"Robert ""Bob"" Smith"` and JSON as `Robert \\"Bob\\" Smith`; decoding undoes
+    both. Best-effort and never raises (verify is a safety gate): if the text
+    parses as neither CSV nor JSON, returns "" and the raw scan still runs.
+
+    Tries JSON first (a streamed array of objects), then CSV. Returns the
+    concatenation of every decoded scalar cell value.
+    """
+    text = rows_text.strip()
+    if not text:
+        return ""
+    parts: list[str] = []
+    # JSON: a list of row objects (the generate/stream JSON shape).
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        data = None
+    if isinstance(data, list):
+        for row in data:
+            if isinstance(row, dict):
+                parts.extend(str(v) for v in row.values() if v is not None)
+            elif row is not None:
+                parts.append(str(row))
+        return "\n".join(parts)
+    # CSV: header + rows. Decoding undoes quote-doubling and quoted newlines.
+    try:
+        reader = csv.reader(io.StringIO(rows_text))
+        for record in reader:
+            parts.extend(cell for cell in record if cell)
+    except (csv.Error, ValueError):
+        return "\n".join(parts)
+    return "\n".join(parts)
+
+
 def verify_values(
     real_values: set[str], rows_text: str, schema: dict[str, Any] | None,
     value_fields: dict[str, str] | None = None,
@@ -125,8 +196,11 @@ def verify_values(
     or synthetic seed), else `fail` if any value appears in the rows or schema,
     else `pass`. Leaks carry only a masked preview — never the full value.
 
-    `value_fields` optionally maps a real value to the source field it came
-    from, so a leak can name the offending field (`field` key) for the caller.
+    The rows are scanned BOTH as raw serialized text and as decoded cell values,
+    so a real value that leaked into a cell can't hide behind CSV quote-doubling
+    or JSON string escaping (a fail-open in a safety gate). `value_fields`
+    optionally maps a real value to the source field it came from, so a leak can
+    name the offending field (`field` key) for the caller.
     """
     schema_text = _schema_searchable_text(schema) if schema else ""
     schema_scanned = bool(schema_text)
@@ -134,9 +208,11 @@ def verify_values(
     if not real_values:
         return "not_applicable", [], schema_scanned
 
+    decoded_rows_text = _decoded_rows_text(rows_text)
+
     leaks: list[dict[str, Any]] = []
     for val in sorted(real_values):
-        in_rows = val in rows_text
+        in_rows = val in rows_text or (bool(decoded_rows_text) and val in decoded_rows_text)
         in_schema = schema_scanned and val in schema_text
         if in_rows or in_schema:
             where = []
@@ -168,11 +244,31 @@ def run_verify(cfg: VerifyConfig, on_event: EventCallback = None) -> dict[str, A
                           context={"path": str(sample_p)}) from exc
 
     real_values = _real_pii_values(sample, cfg.min_value_len)
-    rows_text, rows_hash = _load_rows_text(Path(cfg.rows_path), cfg.rows_in_format)
+    rows_path = Path(cfg.rows_path)
+    rows_text, rows_hash = _load_rows_text(rows_path, cfg.rows_in_format)
+
+    # Fail CLOSED on a JSON rows file that won't parse. Otherwise the decoded
+    # scan silently falls back to a CSV decode of JSON text, which leaves `\"`
+    # escapes intact — an escaped real value would then scan as clean (pass).
+    # A safety gate must never silently under-scan; an unparseable JSON file is
+    # truncated/corrupt and the verdict can't be trusted.
+    effective_format = (cfg.rows_in_format
+                        or ("json" if rows_path.suffix.lower() == ".json" else "csv"))
+    if effective_format == "json" and rows_text.strip():
+        try:
+            json.loads(rows_text)
+        except json.JSONDecodeError as exc:
+            raise SchemaError(
+                f"rows file is not valid JSON (truncated or corrupt): {exc}",
+                context={"path": str(rows_path)},
+                hint="Re-generate the rows; a partial JSON file can't be safely verified.",
+            ) from exc
 
     emit("verify_started", candidate_values=len(real_values))
 
-    verdict, leaks, schema_scanned = verify_values(real_values, rows_text, cfg.schema)
+    value_fields = _real_value_fields(sample, cfg.min_value_len)
+    verdict, leaks, schema_scanned = verify_values(
+        real_values, rows_text, cfg.schema, value_fields)
     source = sample.get("source", "")
     source_hash = hashlib.sha256(str(source).encode("utf-8")).hexdigest() if source else None
 
@@ -198,11 +294,15 @@ def run_verify(cfg: VerifyConfig, on_event: EventCallback = None) -> dict[str, A
     attestation["attestation_path"] = att_path
 
     emit("verify_complete", verdict=verdict, leaks=len(leaks))
+    # Field names a leak was attributed to (deduped, order-preserving) — a
+    # convenience view over `leaks` for callers that just want the field list.
+    leaked_fields = list(dict.fromkeys(
+        lk["field"] for lk in leaks if lk.get("field")))
     return {
         "input": {"rows": str(cfg.rows_path), "sample": str(cfg.sample_path),
                   "schema_scanned": schema_scanned},
         "verdict": verdict,
-        "leaked_fields": [],  # filled below from leaks for convenience
+        "leaked_fields": leaked_fields,
         "attestation": attestation,
         "cost": None,
     }

@@ -84,6 +84,73 @@ class TestDeterminism:
         assert len({r["y"] for r in rows}) > 50, "date_time_this_year has no variance"
         assert len({r["m"] for r in rows}) > 50, "date_time_this_month has no variance"
 
+    def test_unseeded_run_keeps_live_clock_under_concurrent_seeded(self):
+        # Regression: the frozen clock is a PROCESS-GLOBAL patch. An unseeded run
+        # must keep the live wall clock even while a seeded run holds the global
+        # frozen at the 2025 anchor — earlier the unseeded path took a no-op
+        # branch and read the seeded run's frozen 2025 dates (a silent race).
+        import io
+        import threading
+        from datetime import datetime as _dtnow
+
+        s = _schema([{"name": "seen", "type": "datetime", "faker": "date_time_this_year"}])
+        this_year = _dtnow.now().year
+        results: dict[str, str] = {}
+
+        def seeded(barrier):
+            barrier.wait()
+            results["seeded"] = "".join(stream_rows(s, 3000, export_format="csv", seed=7))
+
+        def unseeded(barrier):
+            barrier.wait()
+            results["unseeded"] = "".join(stream_rows(s, 3000, export_format="csv"))
+
+        # Many trials: the race is timing-dependent, so a single pass is not enough.
+        for _ in range(25):
+            results.clear()
+            b = threading.Barrier(2)
+            t1 = threading.Thread(target=seeded, args=(b,))
+            t2 = threading.Thread(target=unseeded, args=(b,))
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+            unseeded_rows = list(csv.DictReader(io.StringIO(results["unseeded"])))
+            years = {r["seen"][:4] for r in unseeded_rows}
+            # The unseeded run must reflect the real current year, never collapse
+            # to the seeded anchor (2025) — and 2025 only if that IS this year.
+            assert years <= {str(this_year)} or str(this_year) in years, (
+                f"unseeded run leaked the frozen clock: years={years}")
+            if str(this_year) != "2025":
+                assert "2025" not in years or len(years) > 1, (
+                    f"unseeded run got the frozen-2025 anchor: years={years}")
+
+    def test_concurrent_seeded_runs_stay_byte_identical(self):
+        # Same-mode (seeded) runs share the one installed patch and must remain
+        # byte-reproducible under concurrency — the group mutex must not corrupt
+        # the shared frozen global across overlapping seeded generations.
+        import threading
+
+        s = _schema([
+            {"name": "d", "type": "date", "faker": "date_this_year"},
+            {"name": "t", "type": "datetime", "faker": "date_time_this_month"},
+        ])
+        reference = "".join(stream_rows(s, 200, export_format="csv", seed=99))
+        outputs: list[str] = []
+        lock = threading.Lock()
+
+        def run():
+            out = "".join(stream_rows(s, 200, export_format="csv", seed=99))
+            with lock:
+                outputs.append(out)
+
+        threads = [threading.Thread(target=run) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert all(o == reference for o in outputs), "concurrent seeded runs diverged"
+
     def test_row_count_and_headers(self, tmp_path):
         s = _schema([{"name": "x", "type": "integer", "faker": "random_int"},
                      {"name": "y", "type": "string", "faker": "word"}])

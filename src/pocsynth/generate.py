@@ -46,73 +46,103 @@ EventCallback = Callable[..., None] | None
 _SEEDED_NOW = datetime(2025, 7, 1, 12, 0, 0)
 _SEEDED_TODAY = _date(2025, 7, 1)
 
-# Faker mutates a process-global module attribute, so concurrent generations
-# (the UI runs sync endpoints in a threadpool) must not race on the patch. We
-# serialize seeded generation behind this lock and use a depth counter so the
-# real classes are restored exactly once, on the outermost exit — never
-# re-capturing an already-frozen class as "real".
-_clock_lock = threading.RLock()
-_clock_depth = 0
+# Faker mutates a PROCESS-GLOBAL module attribute, so concurrent generations
+# (the UI runs sync endpoints in a threadpool) must not race on the patch. The
+# patch is mode-exclusive: while any SEEDED run has the clock frozen, no UNSEEDED
+# run may read it (it would silently get 2025 dates instead of the live clock) —
+# and vice-versa. We model this as a group mutex around a Condition: seeded and
+# unseeded generations exclude each other, but same-mode runs coexist (so the
+# always-seeded UI keeps full concurrency, and the patch is installed once for
+# the whole group and restored on the last seeded exit).
+_clock_cond = threading.Condition()
+_clock_seeded_active = 0     # in-flight seeded (frozen-clock) generations
+_clock_unseeded_active = 0   # in-flight unseeded (live-clock) generations
 
 
 def _noop(*_a, **_k) -> None:
     pass
 
 
+def _install_frozen_clock(_dt) -> None:
+    """Replace the date_time module's `datetime`/`dtdate` globals with frozen
+    subclasses. Faker's own helpers do `isinstance(value, (datetime, dtdate))`
+    against these globals, and genuine datetime/date values flow through them —
+    so each subclass uses a metaclass whose __instancecheck__ also accepts the
+    genuine class, or those checks would reject real values (a ParseError)."""
+    class _DateMeta(type):
+        def __instancecheck__(cls, inst):
+            return isinstance(inst, _date)
+
+    class _DateTimeMeta(type):
+        def __instancecheck__(cls, inst):
+            return isinstance(inst, datetime)
+
+    class _FrozenDate(_date, metaclass=_DateMeta):
+        @classmethod
+        def today(cls):
+            return _SEEDED_TODAY
+
+    class _FrozenDateTime(datetime, metaclass=_DateTimeMeta):
+        @classmethod
+        def now(cls, tz=None):
+            return _SEEDED_NOW if tz is None else _SEEDED_NOW.replace(tzinfo=tz)
+
+    # Capture the genuine stdlib classes (imported at top), never whatever is
+    # currently installed, so restore can't leave a _Frozen behind.
+    _dt._pocsynth_real_dt = datetime
+    _dt._pocsynth_real_date = _date
+    _dt.datetime = _FrozenDateTime
+    _dt.dtdate = _FrozenDate
+
+
 @contextlib.contextmanager
 def _frozen_clock(enabled: bool):
     """Pin Faker's date-provider clocks (`datetime.now()` AND `date.today()`) to
     the fixed seeded anchor so seeded date/datetime fields are byte-reproducible
-    regardless of wall-clock time. No-op when disabled (unseeded runs).
+    regardless of wall-clock time. When disabled (unseeded runs) it keeps the
+    live clock — but still coordinates so a concurrent seeded run's frozen global
+    can't bleed in.
 
-    Process-global and reentrancy-safe: held under a lock for the block's
-    duration and restored to the genuine stdlib classes exactly once."""
-    global _clock_depth
-    if not enabled:
-        yield
-        return
+    Process-global and concurrency-safe: seeded and unseeded runs are mutually
+    exclusive; same-mode runs coexist; the frozen classes are installed once per
+    seeded group and restored on the last seeded exit."""
+    global _clock_seeded_active, _clock_unseeded_active
     import faker.providers.date_time as _dt
 
-    with _clock_lock:
-        if _clock_depth == 0:
-            # Replace the module's `datetime` and `dtdate` globals with frozen
-            # subclasses. Faker's own helpers do `isinstance(value, (datetime,
-            # dtdate))` against these globals, and genuine datetime/date values
-            # flow through them — so each subclass uses a metaclass whose
-            # __instancecheck__ also accepts the genuine class, or those checks
-            # would reject real values (causing a ParseError).
-            class _DateMeta(type):
-                def __instancecheck__(cls, inst):
-                    return isinstance(inst, _date)
-
-            class _DateTimeMeta(type):
-                def __instancecheck__(cls, inst):
-                    return isinstance(inst, datetime)
-
-            class _FrozenDate(_date, metaclass=_DateMeta):
-                @classmethod
-                def today(cls):
-                    return _SEEDED_TODAY
-
-            class _FrozenDateTime(datetime, metaclass=_DateTimeMeta):
-                @classmethod
-                def now(cls, tz=None):
-                    return _SEEDED_NOW if tz is None else _SEEDED_NOW.replace(tzinfo=tz)
-
-            # Capture the genuine stdlib classes (imported at top), never whatever
-            # is currently installed, so restore can't leave a _Frozen behind.
-            _dt._pocsynth_real_dt = datetime
-            _dt._pocsynth_real_date = _date
-            _dt.datetime = _FrozenDateTime
-            _dt.dtdate = _FrozenDate
-        _clock_depth += 1
+    if enabled:
+        with _clock_cond:
+            # Don't freeze the global while an unseeded run is reading live time.
+            while _clock_unseeded_active:
+                _clock_cond.wait()
+            if _clock_seeded_active == 0:
+                _install_frozen_clock(_dt)
+            _clock_seeded_active += 1
         try:
             yield
         finally:
-            _clock_depth -= 1
-            if _clock_depth == 0:
-                _dt.datetime = _dt._pocsynth_real_dt
-                _dt.dtdate = _dt._pocsynth_real_date
+            with _clock_cond:
+                _clock_seeded_active -= 1
+                if _clock_seeded_active == 0:
+                    # Restore in a try so a (theoretical) restore failure can
+                    # never skip notify_all() and strand waiting unseeded runs.
+                    try:
+                        _dt.datetime = _dt._pocsynth_real_dt
+                        _dt.dtdate = _dt._pocsynth_real_date
+                    finally:
+                        _clock_cond.notify_all()
+    else:
+        with _clock_cond:
+            # Don't read the live clock while a seeded run holds it frozen.
+            while _clock_seeded_active:
+                _clock_cond.wait()
+            _clock_unseeded_active += 1
+        try:
+            yield
+        finally:
+            with _clock_cond:
+                _clock_unseeded_active -= 1
+                if _clock_unseeded_active == 0:
+                    _clock_cond.notify_all()
 
 
 # A compact, deterministic regex->string generator (Faker 37 has no regexify).

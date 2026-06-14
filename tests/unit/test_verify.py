@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 
 import pytest
@@ -178,3 +179,127 @@ class TestMalformedSchemaRobustness:
         # Still detects the rows leak; doesn't raise on the bad schema.
         assert verdict == "fail"
         assert any("rows" in lk["where"] for lk in leaks)
+
+
+class TestEscapedValueLeakDetection:
+    """A safety gate must not be defeated by serialization escaping. A real value
+    containing a quote/comma/newline/tab leaks into CSV as a doubled-quote cell
+    and into JSON as an escaped string; a raw-substring scan misses it. verify
+    scans decoded cell values too, so the leak is still caught (no fail-open)."""
+
+    @pytest.mark.parametrize("value", [
+        'Robert "Bob" Smith',          # embedded double-quote → CSV doubling
+        "O'Brien, Patrick James",      # comma forces CSV quoting
+        "line one\nline two secret",   # embedded newline (quoted CSV cell)
+        "tab\tseparated\tsecret",      # embedded tab
+        'quote " and comma , and \n',  # all at once
+    ])
+    def test_quoted_value_in_csv_is_caught(self, tmp_path, value):
+        sample = {"schema": 1, "source": "intake.pdf",
+                  "fields": [{"name": "nickname", "pii": True,
+                              "value_counts": {value: 1}}]}
+        sp = _sample(tmp_path, sample)
+        # Write the leaking value through a real CSV writer (does the escaping).
+        rp = tmp_path / "rows.csv"
+        with open(rp, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["nickname"])
+            w.writerow([value])
+        res = run_verify(VerifyConfig(rows_path=str(rp), sample_path=sp))
+        assert res["verdict"] == "fail", "escaped CSV value evaded the leak scan"
+
+    @pytest.mark.parametrize("value", [
+        'Robert "Bob" Smith',
+        "back\\slash and \"quote\" secret",
+        "unicode café señor secret",
+    ])
+    def test_escaped_value_in_json_is_caught(self, tmp_path, value):
+        sample = {"schema": 1, "source": "intake.pdf",
+                  "fields": [{"name": "nickname", "pii": True,
+                              "value_counts": {value: 1}}]}
+        sp = _sample(tmp_path, sample)
+        rp = tmp_path / "rows.json"
+        rp.write_text(json.dumps([{"nickname": value}]), encoding="utf-8")
+        res = run_verify(VerifyConfig(rows_path=str(rp), sample_path=sp,
+                                      rows_in_format="json"))
+        assert res["verdict"] == "fail", "escaped JSON value evaded the leak scan"
+
+    def test_clean_dataset_still_passes(self, tmp_path):
+        # The decoded scan must not introduce false positives on clean output.
+        sample = {"schema": 1, "source": "intake.pdf",
+                  "fields": [{"name": "nickname", "pii": True,
+                              "value_counts": {'Real "Person" Doe': 1}}]}
+        sp = _sample(tmp_path, sample)
+        rp = tmp_path / "rows.csv"
+        rp.write_text('nickname\n"Generated ""Synth"" Name"\nAnother One\n',
+                      encoding="utf-8")
+        res = run_verify(VerifyConfig(rows_path=str(rp), sample_path=sp))
+        assert res["verdict"] == "pass"
+
+    def test_decoder_never_crashes_on_malformed_rows(self):
+        # Truncated/garbage rows text must not raise; the raw scan still applies.
+        from pocsynth.verify import _decoded_rows_text
+        for bad in ['', '{"x":', '[{"a":1},', 'a,b\n"unterminated', '\x00\x01 x']:
+            _decoded_rows_text(bad)  # no exception
+        # A leak in unparseable text is still caught via the raw fallback.
+        v, leaks, _ = verify_values({"secret_value_here"},
+                                    'a,b\n"unterminated secret_value_here', schema=None)
+        assert v == "fail"
+
+    def test_truncated_json_rows_file_fails_closed(self, tmp_path):
+        # A safety gate must not silently under-scan. An incomplete JSON rows
+        # file (e.g. an interrupted stream) carrying an ESCAPED real value would
+        # otherwise fall back to a CSV decode that leaves `\"` intact → the value
+        # scans as clean (pass). run_verify must raise instead, not emit a verdict.
+        from pocsynth.errors import SchemaError
+        sample = {"schema": 1, "source": "x.pdf",
+                  "fields": [{"name": "nickname", "pii": True,
+                              "value_counts": {'Robert "Bob" Smith': 1}}]}
+        sp = _sample(tmp_path, sample)
+        rp = tmp_path / "rows.json"
+        # Truncated mid-array, with the escaped real value present.
+        rp.write_text('[\n  {"nickname": "Robert \\"Bob\\" Smith"},\n  {"nickname": "Rob',
+                      encoding="utf-8")
+        with pytest.raises(SchemaError):
+            run_verify(VerifyConfig(rows_path=str(rp), sample_path=sp,
+                                    rows_in_format="json"))
+
+    def test_complete_json_is_not_rejected(self, tmp_path):
+        # The fail-closed guard must only fire on INVALID JSON, never on a
+        # complete file (no false rejection of clean output).
+        sample = {"schema": 1, "source": "x.pdf",
+                  "fields": [{"name": "nickname", "pii": True,
+                              "value_counts": {"Real Person Name": 1}}]}
+        sp = _sample(tmp_path, sample)
+        rp = tmp_path / "rows.json"
+        rp.write_text(json.dumps([{"nickname": "Synthetic One"}]), encoding="utf-8")
+        res = run_verify(VerifyConfig(rows_path=str(rp), sample_path=sp,
+                                      rows_in_format="json"))
+        assert res["verdict"] == "pass"
+
+
+class TestLeakedFieldsReport:
+    """run_verify surfaces a deduped `leaked_fields` list (the field names a leak
+    was attributed to), threaded from the Sample's value→field mapping."""
+
+    def test_leaked_fields_names_the_pii_field(self, tmp_path):
+        sp = _sample(tmp_path, DISCOVERY_SAMPLE)
+        rp = _rows(tmp_path, "ssn,state\n555-22-7788,CA\n")
+        res = run_verify(VerifyConfig(rows_path=rp, sample_path=sp))
+        assert res["verdict"] == "fail"
+        assert res["leaked_fields"] == ["ssn"]
+
+    def test_leaked_fields_empty_on_pass(self, tmp_path):
+        sp = _sample(tmp_path, DISCOVERY_SAMPLE)
+        rp = _rows(tmp_path, "ssn,state\n111-00-0000,CA\n")
+        res = run_verify(VerifyConfig(rows_path=rp, sample_path=sp))
+        assert res["verdict"] == "pass"
+        assert res["leaked_fields"] == []
+
+    def test_leaked_fields_deduped_across_rows(self, tmp_path):
+        # The same field leaking on multiple rows is reported once.
+        sp = _sample(tmp_path, DISCOVERY_SAMPLE)
+        rp = _rows(tmp_path, "ssn,state\n555-22-7788,CA\n555-22-9001,NY\n")
+        res = run_verify(VerifyConfig(rows_path=rp, sample_path=sp))
+        assert res["verdict"] == "fail"
+        assert res["leaked_fields"] == ["ssn"]

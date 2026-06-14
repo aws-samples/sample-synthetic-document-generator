@@ -134,7 +134,16 @@ def _sanitize_providers(schema: dict, locale: str = "en_US") -> list[dict]:
             f.pop("weights", None)
             f.pop("weights_source", None)
         faker = f.get("faker")
-        if not faker or faker in valid:
+        if not faker:
+            continue
+        # A model may emit a valid provider with stray whitespace ("  name  ")
+        # or as a non-string; normalize before validating so a recoverable quirk
+        # isn't needlessly downgraded to the generic fallback.
+        if isinstance(faker, str):
+            trimmed = faker.strip()
+            if trimmed != faker:
+                faker = f["faker"] = trimmed
+        if faker in valid:
             continue
         if f.get("enum") or f.get("regex"):
             # enum/regex already drives this field; just drop the bad faker.

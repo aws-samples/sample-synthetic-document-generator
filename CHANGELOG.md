@@ -109,6 +109,9 @@ Total stubbed tests now: **177** (was 119).
 - Example IAM policy in README updated to reference current (4.6 / 4.5) model ARNs and inference-profile ARNs.
 
 ### Fixed
+- **verify no longer fails open on escaped values** — the safety scan now checks the rows' *decoded* cell values in addition to the raw serialized text, so a real PII value containing a quote/comma/newline can't hide behind CSV quote-doubling (`"a ""b"" c"`) or JSON string escaping (`a \"b\" c`). `run_verify` also **fails closed** (raises) on a JSON rows file that won't parse, rather than silently CSV-misdecoding it, and now reports a deduped `leaked_fields` list.
+- **Deterministic clock is now concurrency-safe across modes** — the process-global Faker date-clock patch used for `--seed` reproducibility is a mode-exclusive group mutex: a concurrent *unseeded* generation can no longer read a seeded run's frozen anchor (it kept the live clock), while same-mode runs still run in parallel (the always-seeded web UI keeps full concurrency).
+- **Provider sanitizer recovers whitespace-padded providers** — a model-emitted `faker: "  name  "` is trimmed and kept (was needlessly downgraded to the generic `word` fallback); non-string `faker` values are coerced without crashing.
 - HTML attributes no longer stripped — removed `response.replace('"', '')` that destroyed every `class=""` / `href=""` in model output.
 - First line of model output no longer blindly discarded; `strip_model_preamble()` now removes only actual preambles and code fences.
 - Downloaded PDF always cleaned up via `tempfile` + `try/finally` (was leaking on errors).

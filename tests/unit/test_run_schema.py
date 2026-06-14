@@ -156,6 +156,35 @@ class TestProviderSanitization:
                                             output_dir=str(tmp_path / "g")))
         assert gen["output"]["rows_written"] == 6
 
+    def test_whitespace_padded_provider_is_recovered_not_downgraded(self):
+        # A model sometimes emits a valid provider with stray whitespace
+        # ("  name  ", "\tword\n"). It should be trimmed and kept, not needlessly
+        # coerced to the generic `word` fallback (which would lose fidelity).
+        from pocsynth.schemagen import _sanitize_providers
+
+        schema = {"fields": [
+            {"name": "a", "type": "string", "faker": "  name  "},
+            {"name": "b", "type": "string", "faker": "\tword\n"},
+            {"name": "c", "type": "string", "faker": "person.name"},  # genuinely invalid
+        ]}
+        notes = _sanitize_providers(schema, "en_US")
+        by = {f["name"]: f for f in schema["fields"]}
+        assert by["a"]["faker"] == "name"   # trimmed + recovered
+        assert by["b"]["faker"] == "word"   # trimmed to a real provider
+        assert by["c"]["faker"] == "word"   # still coerced
+        # Only the genuinely-invalid field is reported.
+        assert len(notes) == 1 and notes[0]["field"] == "c"
+
+    def test_non_string_provider_does_not_crash(self):
+        # A model could emit a non-string faker (e.g. a number); the sanitizer
+        # must coerce it to a fallback rather than crashing on `.strip()`.
+        from pocsynth.schemagen import _sanitize_providers
+
+        schema = {"fields": [{"name": "x", "type": "string", "faker": 12345}]}
+        notes = _sanitize_providers(schema, "en_US")
+        assert schema["fields"][0]["faker"] == "word"
+        assert len(notes) == 1
+
 
 class TestFromPromptMode:
     def test_from_prompt_no_counts_downgrades_infer(self, tmp_path):
