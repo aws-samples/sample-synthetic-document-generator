@@ -95,10 +95,14 @@ pipeline splits into a **paid half** (run once) and a **free half** (unlimited):
   `generate` thousands of rows for free.
 
 **PII posture (important):** `extract` audits the extracted values for PII by
-default, and `schema --infer` **never** lets a real PII value become an enum —
-PII fields are bound to Faker providers and the real values are discarded. So
-the **generated dataset is safe to share**, but the **extract sample and the
-PII-audit CSV contain real values and are not**.
+default, and `schema --infer` does not let a real PII value become an enum —
+PII fields are bound to Faker providers and the real values are discarded.
+`verify` then scans the generated rows + schema for any real value that slipped
+through (best-effort: Comprehend + an exact-value scan, may miss reformatted or
+unflagged values). So the **generated dataset is intended to be shareable —
+review it (or run `verify`) before sharing** — but the **extract sample and the
+PII-audit CSV contain real values and must not be shared**. Processing a real
+document sends its contents to Amazon Bedrock + Comprehend in your AWS account.
 
 ## Cost awareness
 

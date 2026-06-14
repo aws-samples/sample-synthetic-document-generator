@@ -146,6 +146,25 @@ class TestExtractCommand:
         assert env["result"]["input"]["mode"] == "discovery"
         assert env["result"]["pii_audit"]["enabled"] is False
 
+    def test_extract_json_mode_omits_egress_notice_from_stdout(self, tmp_path):
+        # The human-mode data-egress notice must not pollute the --json stdout
+        # envelope (agent/JSON contract unchanged); it only goes to stderr in
+        # human mode.
+        pdf = _make_pdf(tmp_path, ["Category: Widget  Region: US"])
+        bedrock = _bedrock_extract_client(
+            [{"category": "Widget", "region": "US"}], mode="discovery")
+        session = _fake_session({"bedrock-runtime": bedrock})
+
+        with patch("pocsynth.extract.make_session", return_value=session):
+            result = runner.invoke(app, [
+                "--json", "extract", str(pdf), "--no-pii-audit",
+                "-o", str(tmp_path / "out")])
+
+        assert result.exit_code == 0, result.stderr
+        # stdout is the clean JSON envelope, no "notice:"/"sending" prose.
+        assert "notice:" not in result.stdout
+        assert "sending" not in result.stdout
+
 
 # --------------------------------------------------------------------------- #
 # schema --from-sample (infer, paid)

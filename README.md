@@ -2,7 +2,7 @@
 
 Turn a real PDF — a contract, a form, a statement, a medical record — into a **synthetic, shareable version** that preserves the structure and formatting but replaces prose and PII with realistic fake values. Then audit the output for any PII that slipped through.
 
-Built for Solutions Architects and PoC engineers who need representative-looking documents for demos, RAG evaluation corpora, model benchmarking, or customer handoff packages — without ever exchanging a real customer document. Utilizing Amazon Comprehend's PII Detection, it performs a PII audit scan on the generated synthetic document to identify any personally identifiable information (PII) and saves the results to a reviewable audit file.
+Built for Solutions Architects and PoC engineers who need representative-looking documents for demos, RAG evaluation corpora, model benchmarking, or customer handoff packages — so you can share a synthetic copy instead of the real customer document. Utilizing Amazon Comprehend's PII Detection, it performs a PII audit scan on the generated synthetic document to identify any personally identifiable information (PII) and saves the results to a reviewable audit file. Note: processing a real document sends its contents to Amazon Bedrock (and Comprehend) in your AWS account; the synthetic output is what's safe to hand off.
 
 ![pocsynth CLI demo](assets/demo-cli.gif)
 
@@ -19,7 +19,7 @@ Under the hood: Amazon Bedrock (Claude Sonnet 4.6 default; Opus 4.6 or Haiku 4.5
 
 ## Typical use cases
 
-- **Customer handoff.** Take an NDA-covered contract, produce a synthetic version, share the synthetic copy with your partner team for workflow discussion. Real content never leaves the trust boundary.
+- **Customer handoff.** Take an NDA-covered contract, produce a synthetic version, share the synthetic copy with your partner team for workflow discussion. The real document is processed in your own AWS account (Bedrock + Comprehend); only the synthetic copy is shared onward.
 - **RAG eval corpus.** Convert 20 messy customer PDFs into 20 synthetic markdown documents, index them, test retrieval quality without PII exposure.
 - **Live demo prep.** Turn a customer's real loan application into a synthetic one for a live demo the same customer will watch — same shape, zero real identifiers.
 - **Model benchmarking.** Run the same document through Sonnet, Opus, and Haiku; compare cost + output quality.
@@ -79,7 +79,7 @@ pocsynth generate --schema ./out/schema.json --rows 10000  # free, unlimited
 pocsynth verify --rows ./out/rows.csv --sample ./out/sample.json --schema ./out/schema.json  # prove no real PII leaked
 ```
 
-**PII is structurally barred from synthetic output.** `extract` audits the values it pulls (Amazon Comprehend, on by default), and `schema --infer` never lets a real PII value become an `enum` — PII fields are bound to Faker providers and the real values are discarded. The **generated dataset is safe to share**; the extract sample and audit CSV are not.
+**The generator is designed to keep real PII out of synthetic output, and `verify` scans to check — best-effort, not a guarantee.** `extract` audits the values it pulls (Amazon Comprehend, on by default), and `schema --infer` does not let a real PII value become an `enum` — PII fields are bound to Faker providers and the real values are discarded. `verify` then scans the generated rows and the schema for any real value that slipped through. Detection is best-effort (Comprehend + an exact-value scan) and may miss reformatted or unflagged values, so **review synthetic output before sharing it**; the extract sample and audit CSV are never safe to share.
 
 **Determinism.** `--seed` makes generation byte-reproducible. **Distributions:** low-cardinality `enum` fields carry real-world frequency weights (inferred from the source document, model-proposed, or uniform — your choice via `--distribution`).
 

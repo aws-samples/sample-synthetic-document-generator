@@ -829,11 +829,30 @@ def run(
     Exactly one seed source: --preset / --prompt / --document. Safe-by-default
     (ADR-0011): paid paths require --yes above the cost gate; the document path
     runs verify and exits 8 (NOT cleared for sharing) if a real value leaked.
+
+    --document sends the document to Amazon Bedrock (extraction) and Amazon
+    Comprehend (PII audit) in your AWS account. Leak detection is best-effort —
+    review the output before sharing. --prompt sends only your description text
+    to Bedrock. --preset touches no AWS.
     """
     from pocsynth.run import RunConfig, run_pipeline
 
     stream = ctx.obj.get("stream", False)
     json_mode = ctx.obj.get("json_mode", False)
+
+    # Human-mode data-egress notice (paid paths only; JSON contract unchanged).
+    if not json_mode:
+        if document:
+            _stderr.print(
+                f"[yellow]notice:[/] sending {document!r} to Amazon Bedrock "
+                "(extraction) and Amazon Comprehend (PII audit) in your AWS account. "
+                "Leak detection is best-effort — review the output before sharing."
+            )
+        elif prompt:
+            _stderr.print(
+                "[yellow]notice:[/] sending your prompt text to Amazon Bedrock "
+                "(schema design) in your AWS account."
+            )
 
     def _go() -> dict[str, Any]:
         def on_event(name: str, **payload):
@@ -969,12 +988,24 @@ def extract(
     ] = True,
     output_dir: Annotated[str | None, typer.Option("--output-dir", "-o")] = None,
 ) -> None:
-    """Extract structured records (conform) or field observations (discovery) from a PDF."""
+    """Extract structured records (conform) or field observations (discovery) from a PDF.
+
+    Sends the document to Amazon Bedrock (extraction) and, unless --no-pii-audit,
+    Amazon Comprehend (PII audit) in your AWS account.
+    """
     from pocsynth.extract import ExtractConfig, run_extraction
     from pocsynth.schema import load_schema
 
     stream = ctx.obj.get("stream", False)
     json_mode = ctx.obj.get("json_mode", False)
+
+    # Human-mode data-egress notice (JSON contract unchanged).
+    if not json_mode:
+        services = ("Amazon Bedrock (extraction) and Amazon Comprehend (PII audit)"
+                    if pii_audit else "Amazon Bedrock (extraction)")
+        _stderr.print(
+            f"[yellow]notice:[/] sending {pdf!r} to {services} in your AWS account."
+        )
 
     def _go() -> dict[str, Any]:
         schema_dict = load_schema(schema) if schema else None

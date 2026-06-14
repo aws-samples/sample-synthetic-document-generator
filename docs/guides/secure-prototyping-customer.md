@@ -2,8 +2,8 @@
 
 You're running this in **your own AWS account**, against **your own** document,
 to produce synthetic data you can hand to a vendor, a model, or a teammate. You
-need a dataset shaped like your real one — and **proof** that no real value
-leaked into it.
+need a dataset shaped like your real one — and a **best-effort check** that no
+real value leaked into it.
 
 ## The one command
 
@@ -20,6 +20,20 @@ pocsynth run --document intake.pdf --rows 10000 --yes -o ./out
 3. **generate** — produce `./out/rows.csv` (free, offline, deterministic).
 4. **verify** — scan the generated rows **and** the schema artifact against the
    real PII values from your document. Emits `./out/attestation.json`.
+
+## What leaves your machine
+
+Processing a real document is **not** a local-only operation: the document's
+contents are sent to **Amazon Bedrock** (extraction) and **Amazon Comprehend**
+(PII audit) in **your own AWS account**. Nothing is sent to a third party, but
+the data does leave your machine for those AWS services. Only run this on
+documents you're authorized to send to Bedrock and Comprehend. (By contrast, the
+`--preset` and `--prompt` paths send no document — preset is fully offline, and
+prompt sends only your description text.)
+
+Note also that leak detection is **best-effort**, not a guarantee: `verify` uses
+Comprehend's PII detection plus an exact-value scan and can miss reformatted,
+partial, or unflagged values. **Review the synthetic output before sharing it.**
 
 ## Safe-by-default
 

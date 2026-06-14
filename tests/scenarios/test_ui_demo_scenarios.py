@@ -74,6 +74,25 @@ class TestPageAndPills:
     def test_healthz(self, client):
         assert client.get("/healthz").status_code == 200
 
+    def test_index_makes_no_pii_safe_claim(self, client):
+        # The UI must not label the upload path "PII-safe" or claim real values
+        # are "barred from"/"never reach" the output — detection is best-effort.
+        r = client.get("/")
+        text = r.text
+        assert "PII-safe" not in text
+        assert "barred from output" not in text
+        assert "never reach the output" not in text
+
+    def test_index_warns_document_is_sent_to_aws(self, client):
+        # The upload pane carries an up-front data-egress warning naming the
+        # AWS services that receive the document (Comprehend + Bedrock).
+        r = client.get("/")
+        text = r.text
+        assert "Amazon Comprehend" in text and "Amazon Bedrock" in text
+        assert "your AWS account" in text
+        # The "Match a document" tab no longer claims safety.
+        assert "Match a document" in text
+
 
 # --------------------------------------------------------------------------- #
 # Scenario A — compose with pills (the default utility path)

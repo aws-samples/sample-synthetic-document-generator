@@ -60,9 +60,11 @@ def _comprehend_whole_value(*markers):
 
 
 class TestSafetyPanelPass:
-    def test_clean_document_shows_passed_and_clears(self, client, customer_pdf):
+    def test_clean_document_shows_no_leak_and_disclaimer(self, client, customer_pdf):
         # The model binds the PII field to faker.name (guard suppresses the real
-        # value), so no real value reaches rows or schema → verify PASSES.
+        # value), so no real value reaches rows or schema → verify finds no leak.
+        # The panel must NOT over-promise: no "PASSED"/"Cleared for sharing"; it
+        # states "no leak detected" plus the best-effort disclaimer.
         app = client.app
         _override(
             app,
@@ -80,8 +82,14 @@ class TestSafetyPanelPass:
             )
         assert r.status_code == 200
         assert 'id="safety"' in r.text
-        assert "✓ PASSED" in r.text
-        assert "Cleared for sharing" in r.text
+        assert "✓ NO LEAK DETECTED" in r.text
+        assert "No real value detected" in r.text
+        # No absolute safety claims.
+        assert "Cleared for sharing" not in r.text
+        assert "PASSED" not in r.text
+        # The best-effort disclaimer is always shown.
+        assert "best-effort" in r.text
+        assert "Review the output" in r.text
         # The full real values must not appear anywhere in the panel/preview.
         assert "Alice Hernandez" not in r.text
         assert "555-22-7788" not in r.text
@@ -132,9 +140,11 @@ class TestSafetyPanelFailClosed:
                 files={"seed_document": ("customer_intake.pdf", fh, "application/pdf")},
                 data={"rows": "100"})
         assert r.status_code == 200
-        assert "✗ FAILED" in r.text
+        assert "✗ LEAK DETECTED" in r.text
         assert "Not cleared for sharing" in r.text
         assert "Download blocked" in r.text
+        # The best-effort disclaimer shows on the fail panel too.
+        assert "best-effort" in r.text
         # Even when reporting the leak, the full real value is masked.
         assert "Alice Hernandez" not in r.text
 

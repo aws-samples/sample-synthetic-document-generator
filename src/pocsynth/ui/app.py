@@ -210,6 +210,8 @@ _SAFETY_CSS = """
    text-decoration:underline; cursor:pointer;}
  #safety .blocked{font-family:'Hanken Grotesk',sans-serif; font-weight:600; color:var(--vermilion);
    margin-top:.6rem;}
+ #safety .disclaimer{font-size:.74rem; line-height:1.5; color:var(--ink-soft); margin-top:.8rem;
+   padding-top:.7rem; border-top:1px dashed var(--line);}
 </style>"""
 
 
@@ -223,11 +225,11 @@ def _render_safety_panel(att: dict, *, pii_entities: int, suppressed_fields: lis
     verdict = att["verdict"]
     leaks = att.get("leaks", [])
     if verdict == "fail":
-        cls, badge, badge_cls = "fail", "✗ FAILED", "fail"
+        cls, badge, badge_cls = "fail", "✗ LEAK DETECTED", "fail"
         headline = "Not cleared for sharing"
     elif verdict == "pass":
-        cls, badge, badge_cls = "pass", "✓ PASSED", "pass"
-        headline = "Cleared for sharing"
+        cls, badge, badge_cls = "pass", "✓ NO LEAK DETECTED", "pass"
+        headline = "No real value detected in the output"
     else:  # not_applicable
         cls, badge, badge_cls = "", "— N/A", "na"
         headline = "No real source to verify"
@@ -259,6 +261,14 @@ def _render_safety_panel(att: dict, *, pii_entities: int, suppressed_fields: lis
         'hx-swap="none">↓ Download attestation (JSON)</a>'
         '<span id="att-sink"></span></div>'
     )
+    # Best-effort disclaimer, shown on every verdict (pass/fail/na) so the panel
+    # never implies a guarantee.
+    disclaimer = (
+        '<div class="disclaimer">Detection is best-effort — Amazon Comprehend PII '
+        "detection plus an exact-value scan of the rows and schema — and may miss "
+        "values (e.g. reformatted, partial, or unflagged PII). Review the output "
+        "yourself before sharing.</div>"
+    )
     return (
         _SAFETY_CSS
         + '<div id="safety"><div class="sp ' + cls + '">'
@@ -268,6 +278,7 @@ def _render_safety_panel(att: dict, *, pii_entities: int, suppressed_fields: lis
         + facts + leak_html
         + att_link
         + blocked_html
+        + disclaimer
         + "</div></div>"
     )
 
@@ -346,8 +357,8 @@ def create_app() -> FastAPI:
                 pii_entities = len(detected)
                 pii_note = (
                     f"PII audit: {len(detected)} entities found; "
-                    f"{len(pii_fields)} field(s) flagged — real values are barred "
-                    "from the generated output."
+                    f"{len(pii_fields)} field(s) flagged — real values are audited "
+                    "and the generated output is scanned for leaks (best-effort)."
                 )
                 sample = {
                     "schema": 1, "source": seed_document.filename or "upload",
@@ -700,6 +711,9 @@ _INDEX_HTML = """<!DOCTYPE html>
  .seedpane.on{display:block; animation:fade .25s ease;}
  @keyframes fade{from{opacity:0; transform:translateY(4px);}to{opacity:1; transform:none;}}
  .seedpane label{font-size:.85rem; color:var(--ink-soft); display:block; margin-bottom:.4rem;}
+ .egress{font-size:.8rem; line-height:1.5; color:var(--ink); background:var(--vermilion-soft);
+   border:1px solid var(--vermilion); border-radius:10px; padding:.7rem .9rem; margin-bottom:.7rem;}
+ .egress b{color:var(--vermilion);}
  .field{width:100%; font-family:'Hanken Grotesk',sans-serif; font-size:1rem;
    border:1px solid var(--line); border-radius:10px; padding:.7rem .9rem; background:#fff;
    color:var(--ink);}
@@ -745,8 +759,8 @@ _INDEX_HTML = """<!DOCTYPE html>
    <span class="kicker">pocsynth · bedrock + faker</span>
  </header>
  <p class="tagline">A real data-generation utility. Compose a dataset like a sentence,
-   preview the shape, then export the <b>full set at any row count</b> — generation
-   streams locally and free.</p>
+   preview the shape, then export the <b>full set at any row count</b> — row
+   generation runs locally and free.</p>
 
  <div class="layout">
   <form class="card" hx-post="/preview" hx-target="#preview" hx-swap="outerHTML"
@@ -774,7 +788,7 @@ _INDEX_HTML = """<!DOCTYPE html>
       <button type="button" class="seedtab" role="tab" aria-selected="false"
         onclick="pickSeed(this,'custom')">✎ Describe your own <span class="tag paid">custom</span></button>
       <button type="button" class="seedtab" role="tab" aria-selected="false"
-        onclick="pickSeed(this,'upload')">⬆ Match a document <span class="tag paid">PII-safe</span></button>
+        onclick="pickSeed(this,'upload')">⬆ Match a document <span class="tag paid">paid · sent to AWS</span></button>
     </div>
     <div class="seedpane on" data-seed="pills">
       <label>The sentence above composes the prompt. Bedrock designs the schema;
@@ -788,8 +802,13 @@ _INDEX_HTML = """<!DOCTYPE html>
       <button type="button" class="linkbtn" onclick="loadExample()">↻ load the worked example</button>
     </div>
     <div class="seedpane" data-seed="upload">
-      <label>Upload a real document to mirror its shape. Values are PII-audited and
-        never reach the output.</label>
+      <div class="egress">⚠ Your document is uploaded and its text is sent to
+        <b>Amazon Comprehend</b> (PII detection); the field structure is sent to
+        <b>Amazon Bedrock</b> (schema design) in your AWS account. Don't upload
+        data you aren't authorized to send to those services.</div>
+      <label>Upload a real document to mirror its shape. The values are audited
+        with Comprehend and the generated output is scanned for leaks — best-effort,
+        not a guarantee. Review the output before sharing.</label>
       <input class="field" type="file" name="seed_document" accept="application/pdf">
     </div>
    </div>
@@ -814,7 +833,7 @@ _INDEX_HTML = """<!DOCTYPE html>
    <div class="ledger">
      <div><span class="free">●</span> generate · stream · download — <span class="free">free, local, unlimited</span></div>
      <div><span class="paid">●</span> schema design — <span class="paid">one bedrock call, ~pennies</span></div>
-     <div style="margin-top:.4rem">uploaded documents are PII-audited &amp; barred from output</div>
+     <div style="margin-top:.4rem">uploaded documents are sent to AWS (Comprehend + Bedrock), PII-audited &amp; output scanned for leaks</div>
    </div>
   </aside>
  </div>
