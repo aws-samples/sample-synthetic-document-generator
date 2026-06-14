@@ -175,16 +175,52 @@ class TestPillCompose:
 # --------------------------------------------------------------------------- #
 class TestDescribeCustom:
     def test_custom_prompt_drives_schema(self, client):
+        # On the custom tab (seed_mode=custom) the prompt drives the schema.
         app = client.app
         _override(app, bedrock=bedrock_schema_stub(schema_fields=[
             {"name": "marker_field", "type": "string", "faker": "word"}]))
         r = client.post("/preview", data={
+            "seed_mode": "custom",
             "prompt": "a marketplace with sellers, listings, and gross merchandise value",
-            "business": "B2B SaaS",  # pill default also submitted; prompt must win
+            "business": "B2B SaaS",  # pill default also submitted; custom mode wins
             "rows": "200",
         })
         assert r.status_code == 200
         assert "marker_field" in r.text
+
+
+class TestSeedModeRouting:
+    """Regression: a stale prompt in the hidden custom pane must NOT override the
+    pills. The server routes on seed_mode (the active tab), not field-emptiness."""
+
+    def test_pills_mode_ignores_stale_prompt(self, client):
+        app = client.app
+        captured = {}
+
+        def _bedrock_capture():
+            stub = bedrock_schema_stub(schema_fields=[
+                {"name": "pills_field", "type": "string", "faker": "word"}])
+            orig = stub.converse
+
+            def _spy(**kw):
+                # Record the prompt text Bedrock was asked to design from.
+                captured["text"] = kw["messages"][0]["content"][0]["text"]
+                return orig.return_value
+            stub.converse.side_effect = _spy
+            return stub
+
+        _override(app, bedrock=_bedrock_capture())
+        client.post("/preview", data={
+            "seed_mode": "pills",
+            "business": "Insurance",
+            # A stale, pre-filled-style prompt is still submitted by the form…
+            "prompt": "A digital advertising platform's campaign performance dataset",
+            "rows": "50",
+        })
+        # …but pills mode ignores it: the composed prompt is the Insurance pills,
+        # not the advertising text.
+        assert "Insurance" in captured["text"]
+        assert "advertising" not in captured["text"].lower()
 
 
 # --------------------------------------------------------------------------- #

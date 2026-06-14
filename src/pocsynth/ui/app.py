@@ -309,6 +309,7 @@ def create_app() -> FastAPI:
         granularity: str | None = Form(None),
         prompt: str | None = Form(None),
         seed: int = Form(42),
+        seed_mode: str = Form("pills"),
         seed_document: UploadFile | None = None,
     ) -> HTMLResponse:
         pii_note: str | None = None
@@ -320,6 +321,14 @@ def create_app() -> FastAPI:
 
         prompt = (prompt or "").strip() or None
         business = business or None
+        # Route on the active seed tab, not on whichever field is non-empty: a
+        # stale value in a hidden pane (e.g. a pre-filled custom textarea) must
+        # never override the user's choice. The browser sets seed_mode from the
+        # active tab; it defaults to "pills".
+        if seed_mode == "pills":
+            prompt = None  # the pills compose the prompt; ignore any hidden text
+        elif seed_mode == "custom":
+            seed_document = None
         # Set on the document path: real PII values + suppressed fields + entity
         # count, used to build the F4 safety panel after generation.
         real_pii_values: set[str] = set()
@@ -601,7 +610,8 @@ def _render_index() -> str:
         .replace("__VARIATION__", _opts(VARIATION, default="medium"))
         .replace("__GRAN__", _opts(GRANULARITY, default="daily"))
         .replace("__PREVIEWN__", str(PREVIEW_ROWS))
-        .replace("__EXAMPLE__", _html_escape(EXAMPLE_PROMPT))
+        # The worked example is opt-in via the "load the worked example" button
+        # (it must NOT prefill the textarea, or it overrides the pills).
         .replace("__EXAMPLE_JSON__", json.dumps(EXAMPLE_PROMPT))
     )
 
@@ -759,6 +769,7 @@ _INDEX_HTML = """<!DOCTYPE html>
    </p>
 
    <div class="seeds">
+    <input type="hidden" name="seed_mode" id="seed_mode" value="pills">
     <div class="seedtabs" role="tablist">
       <button type="button" class="seedtab" role="tab" aria-selected="true"
         onclick="pickSeed(this,'pills')">▣ Compose with pills</button>
@@ -775,7 +786,7 @@ _INDEX_HTML = """<!DOCTYPE html>
       <label>Describe exactly the dataset you need — columns, ranges, relationships.
         The more specific, the better the schema.</label>
       <textarea class="field" name="prompt" rows="5"
-        placeholder="Describe your dataset…">__EXAMPLE__</textarea>
+        placeholder="Describe your dataset…"></textarea>
       <button type="button" class="linkbtn" onclick="loadExample()">↻ load the worked example</button>
     </div>
     <div class="seedpane" data-seed="upload">
@@ -825,6 +836,9 @@ _INDEX_HTML = """<!DOCTYPE html>
    document.querySelectorAll('.seedtab').forEach(t=>t.setAttribute('aria-selected', t===tab));
    document.querySelectorAll('.seedpane').forEach(p=>
      p.classList.toggle('on', p.dataset.seed===which));
+   // Record the active seed source so the server routes on intent, not on
+   // whichever field happens to be non-empty.
+   const sm=document.getElementById('seed_mode'); if(sm)sm.value=which;
    // Clear competing inputs so the chosen source wins server-side.
    if(which!=='custom'){const e=document.querySelector('[name=prompt]'); if(e)e.value='';}
    if(which!=='upload'){const e=document.querySelector('[name=seed_document]'); if(e)e.value='';}
