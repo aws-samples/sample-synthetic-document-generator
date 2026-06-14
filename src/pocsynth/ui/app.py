@@ -202,7 +202,7 @@ def _render_preview(schema: dict, rows: list[dict], *,
         + f'<input type="hidden" name="seed" value="{int(seed)}">'
         + '<label class="dlrows">rows&nbsp;'
         + f'<input type="number" name="rows" value="{int(full_rows)}" min="1" '
-        + 'step="1000"></label>'
+        + 'step="1"></label>'
         + '<button type="submit" name="format" value="csv">↓ CSV</button>'
         + '<button type="submit" name="format" value="json">↓ JSON</button>'
         + "<small>full dataset · streamed · runs locally · reuses this schema</small>"
@@ -952,7 +952,7 @@ _INDEX_HTML = """<!DOCTYPE html>
         hx-encoding="multipart/form-data" hx-indicator="this">
    <p class="sentence">
      Generate a
-     <span class="pill num"><input type="number" name="rows" value="1000" min="1" step="100"></span>
+     <span class="pill num"><input type="number" name="rows" value="1000" min="1" step="1"></span>
      row dataset of
      <span class="pill"><select name="record_type">__RECORD__</select></span>
      for

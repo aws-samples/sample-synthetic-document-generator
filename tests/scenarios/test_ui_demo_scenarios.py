@@ -98,6 +98,29 @@ class TestPageAndPills:
         assert 'class="pill' in r.text
         assert "healthz" not in r.text
 
+    def test_rows_inputs_default_passes_html_validation(self, client):
+        # Regression: a number input's value must satisfy (value - min) % step == 0
+        # or the browser rejects it ("not in range"). With step=100/1000 the
+        # default 1000 was invalid; rows is a plain count, so step must be 1.
+        import re
+        html_pages = [client.get("/").text]
+        # the download form (in a preview) carries the second rows input
+        _override(client.app, bedrock=bedrock_schema_stub(
+            schema_fields=[{"name": "x", "type": "string", "faker": "word"}]))
+        html_pages.append(client.post(
+            "/preview", data={"record_type": "orders", "rows": "1000"}).text)
+        rows_inputs = []
+        for page in html_pages:
+            for m in re.finditer(r'<input[^>]*name="rows"[^>]*>', page):
+                rows_inputs.append(m.group(0))
+        assert rows_inputs, "no rows number inputs found"
+        for tag in rows_inputs:
+            value = int(re.search(r'value="(\d+)"', tag).group(1))
+            mn = int(re.search(r'min="(\d+)"', tag).group(1))
+            st = int(re.search(r'step="(\d+)"', tag).group(1))
+            assert value >= mn and (value - mn) % st == 0, (
+                f"rows default {value} fails HTML validation (min={mn} step={st}): {tag}")
+
     def test_index_renders_record_type_and_scenario_pills(self, client):
         # The pills are keyed on record type (the domain) and scenario (workload),
         # aligned to the SIM use cases — not an industry pill.
