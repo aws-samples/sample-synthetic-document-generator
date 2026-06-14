@@ -83,6 +83,15 @@ class TestPageAndPills:
         assert "barred from output" not in text
         assert "never reach the output" not in text
 
+    def test_index_has_no_cost_language(self, client):
+        # Cost/price framing was removed in favor of "runs locally" wording.
+        r = client.get("/")
+        text = r.text
+        assert "$" not in text
+        assert "pennies" not in text
+        assert "cost nothing" not in text
+        assert "runs locally" in text
+
     def test_index_warns_document_is_sent_to_aws(self, client):
         # The upload pane carries an up-front data-egress warning naming the
         # AWS services that receive the document (Comprehend + Bedrock).
@@ -231,7 +240,7 @@ class TestMatchDocument:
 # Scenario 3 — SA describes the business in the UI text box (no document)
 # --------------------------------------------------------------------------- #
 class TestScenario3UIPromptSeeded:
-    def test_describe_business_preview_and_cost_surfaced(self, client):
+    def test_describe_business_preview_renders_fields(self, client):
         app = client.app
         _override(
             app,
@@ -249,8 +258,11 @@ class TestScenario3UIPromptSeeded:
                   "rows": "10"},
         )
         assert r.status_code == 200
-        # The paid path must surface a cost figure in the preview (ADR-0007 gate).
-        assert "$" in r.text or "cost" in r.text.lower()
+        # The prompt path renders a preview of the designed schema. The UI no
+        # longer surfaces a dollar cost figure (cost language removed) — the
+        # preview shows the schema's fields instead.
+        assert "account_name" in r.text
+        assert "fields" in r.text
 
     def test_prompt_path_requires_explicit_submit_not_on_load(self, client):
         """GET / must not trigger a paid call; only POST /preview does."""

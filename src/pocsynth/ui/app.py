@@ -117,7 +117,6 @@ _PREVIEW_CSS = """
  #preview .badge{font-family:'JetBrains Mono',monospace; font-size:.7rem; letter-spacing:.04em;
    padding:.3rem .6rem; border-radius:7px; display:inline-flex; align-items:center; gap:.35rem;}
  #preview .badge.free{background:var(--teal-soft); color:var(--teal);}
- #preview .badge.cost{background:var(--vermilion-soft); color:var(--vermilion);}
  #preview .badge.pii{background:#fbf3d8; color:var(--gold);}
  #preview .tablewrap{overflow:auto; margin:1.1rem 0; border:1px solid var(--line);
    border-radius:12px; max-height:420px;}
@@ -144,7 +143,7 @@ _PREVIEW_CSS = """
 </style>"""
 
 
-def _render_preview(schema: dict, rows: list[dict], *, cost: float | None,
+def _render_preview(schema: dict, rows: list[dict], *,
                     pii_note: str | None, full_rows: int, seed: int) -> str:
     cols = field_names(schema)
     head = "".join(f"<th>{_html_escape(c)}</th>" for c in cols)
@@ -153,13 +152,6 @@ def _render_preview(schema: dict, rows: list[dict], *, cost: float | None,
         body += "<tr>" + "".join(
             f"<td>{_html_escape(str(row.get(c, '')))}</td>" for c in cols
         ) + "</tr>"
-    # The schema is always Bedrock-designed, so a paid call happened. cost is
-    # None only when the estimate itself failed — say so honestly rather than
-    # implying the run was free.
-    if cost is not None:
-        cost_badge = f'<span class="badge cost">◆ schema ≈ ${cost:.4f}</span>'
-    else:
-        cost_badge = '<span class="badge cost">◆ schema cost: unavailable</span>'
     pii_badge = (
         f'<span class="badge pii" title="{_html_escape(pii_note)}">⚠ PII audited</span>'
         if pii_note else ""
@@ -170,7 +162,7 @@ def _render_preview(schema: dict, rows: list[dict], *, cost: float | None,
         + '<div id="preview"><div class="pv">'
         + '<div class="pv-head">'
         + f'<h3>{schema_name} <span>· {len(rows)}-row sample</span></h3>'
-        + f'<div class="badges">{cost_badge}{pii_badge}'
+        + f'<div class="badges">{pii_badge}'
         + f'<span class="badge free">{len(cols)} fields</span></div>'
         + "</div>"
         + f'<div class="tablewrap"><table><thead><tr>{head}</tr></thead>'
@@ -182,7 +174,7 @@ def _render_preview(schema: dict, rows: list[dict], *, cost: float | None,
         + 'step="1000"></label>'
         + '<button type="submit" name="format" value="csv">↓ CSV</button>'
         + '<button type="submit" name="format" value="json">↓ JSON</button>'
-        + "<small>full dataset · streamed · free · reuses this schema</small>"
+        + "<small>full dataset · streamed · runs locally · reuses this schema</small>"
         + "</form></div></div>"
     )
 
@@ -319,7 +311,6 @@ def create_app() -> FastAPI:
         seed: int = Form(42),
         seed_document: UploadFile | None = None,
     ) -> HTMLResponse:
-        cost: float | None = None
         pii_note: str | None = None
         rows = max(1, rows)
 
@@ -373,7 +364,6 @@ def create_app() -> FastAPI:
                 res = run_schema(SchemaConfig(sample_path=str(sample_path),
                                               output_dir=str(tdp), bedrock_client=bedrock))
                 schema = json.loads(Path(res["output"]["schema_path"]).read_text())
-                cost = _rough_cost(res["output"].get("bedrock_usage", {}))
                 # Fields the PII guard suppressed are noted in the lint report.
                 suppressed_fields = [
                     n.get("field") for n in res.get("lint", {}).get("notes", [])
@@ -389,7 +379,6 @@ def create_app() -> FastAPI:
                 res = run_schema(SchemaConfig(prompt=effective, output_dir=str(tdp),
                                               bedrock_client=bedrock))
                 schema = json.loads(Path(res["output"]["schema_path"]).read_text())
-                cost = _rough_cost(res["output"].get("bedrock_usage", {}))
 
             # Render the sample straight from the streaming generator (which
             # validates the schema as its first step) — no temp-file round trip.
@@ -432,7 +421,7 @@ def create_app() -> FastAPI:
             _ATTESTATION_STORE.pop(sid, None)
 
         resp = HTMLResponse(
-            _render_preview(schema, preview_rows, cost=cost, pii_note=pii_note,
+            _render_preview(schema, preview_rows, pii_note=pii_note,
                             full_rows=rows, seed=seed)
             + safety_html
         )
@@ -586,18 +575,6 @@ def _pii_field_names(text: str, comprehend) -> set[str]:
         by_field.setdefault(name, []).append(m.group(2))
     records = [{name: " ".join(vals)} for name, vals in by_field.items()]
     return _pii_fields(records, comprehend)
-
-
-def _rough_cost(usage: dict) -> float | None:
-    """Best-effort cost for the preview banner; falls back to None on any error."""
-    try:
-        from pocsynth.pricing import estimate_bedrock_cost, load_pricing
-        pricing = load_pricing()
-        c = estimate_bedrock_cost("sonnet", int(usage.get("input_tokens", 0)),
-                                  int(usage.get("output_tokens", 0)), pricing)
-        return c["total_cost_usd"]
-    except Exception:  # noqa: BLE001
-        return None
 
 
 def _opts(values, *, default=None, labels=None) -> str:
@@ -760,7 +737,7 @@ _INDEX_HTML = """<!DOCTYPE html>
  </header>
  <p class="tagline">A real data-generation utility. Compose a dataset like a sentence,
    preview the shape, then export the <b>full set at any row count</b> — row
-   generation runs locally and free.</p>
+   row generation runs locally.</p>
 
  <div class="layout">
   <form class="card" hx-post="/preview" hx-target="#preview" hx-swap="outerHTML"
@@ -788,11 +765,11 @@ _INDEX_HTML = """<!DOCTYPE html>
       <button type="button" class="seedtab" role="tab" aria-selected="false"
         onclick="pickSeed(this,'custom')">✎ Describe your own <span class="tag paid">custom</span></button>
       <button type="button" class="seedtab" role="tab" aria-selected="false"
-        onclick="pickSeed(this,'upload')">⬆ Match a document <span class="tag paid">paid · sent to AWS</span></button>
+        onclick="pickSeed(this,'upload')">⬆ Match a document <span class="tag paid">sent to AWS</span></button>
     </div>
     <div class="seedpane on" data-seed="pills">
       <label>The sentence above composes the prompt. Bedrock designs the schema;
-        generation is free.</label>
+        row generation runs locally.</label>
     </div>
     <div class="seedpane" data-seed="custom">
       <label>Describe exactly the dataset you need — columns, ranges, relationships.
@@ -815,7 +792,7 @@ _INDEX_HTML = """<!DOCTYPE html>
 
    <div class="run">
      <button type="submit"><span class="spin">◠</span> Preview&nbsp;↑</button>
-     <small>Preview shows a __PREVIEWN__-row sample. Download generates the full count, streamed &amp; free.</small>
+     <small>Preview shows a __PREVIEWN__-row sample. Download generates the full count locally, streamed.</small>
    </div>
   </form>
 
@@ -829,10 +806,10 @@ _INDEX_HTML = """<!DOCTYPE html>
      sample of rows before committing.</p></div></div>
    <div class="step"><div class="n">3</div><div>
      <p><b>Export the full set.</b> Stream CSV or JSON at any row count — the schema
-     is reused, so rows cost nothing.</p></div></div>
+     is reused, so row generation stays local.</p></div></div>
    <div class="ledger">
-     <div><span class="free">●</span> generate · stream · download — <span class="free">free, local, unlimited</span></div>
-     <div><span class="paid">●</span> schema design — <span class="paid">one bedrock call, ~pennies</span></div>
+     <div><span class="free">●</span> generate · stream · download — <span class="free">runs locally, unlimited</span></div>
+     <div><span class="paid">●</span> schema design — <span class="paid">one Bedrock call</span></div>
      <div style="margin-top:.4rem">uploaded documents are sent to AWS (Comprehend + Bedrock), PII-audited &amp; output scanned for leaks</div>
    </div>
   </aside>
