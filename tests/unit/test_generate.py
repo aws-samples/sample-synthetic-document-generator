@@ -7,6 +7,7 @@ from __future__ import annotations
 import csv
 import json
 import re
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,33 @@ class TestDeterminism:
         run_generation(GenerateConfig(schema=s, rows=20, seed=42, output_dir=str(a)))
         run_generation(GenerateConfig(schema=s, rows=20, seed=42, output_dir=str(b)))
         assert (a / "rows.csv").read_bytes() == (b / "rows.csv").read_bytes()
+
+    def test_relative_date_fields_seed_reproducible_across_clock(self, monkeypatch):
+        # Regression: Faker's relative-date providers (date_this_year,
+        # date_of_birth, date_time_this_month, …) anchor on datetime.now(), so a
+        # seeded run must freeze the clock or the same seed yields different
+        # absolute dates on different runs. Simulate the wall clock advancing
+        # between two seeded runs and require byte-identical output.
+        import faker.providers.date_time as _dt
+
+        s = _schema([
+            {"name": "dob", "type": "date", "faker": "date_of_birth"},
+            {"name": "seen", "type": "datetime", "faker": "date_time_this_year"},
+            {"name": "made", "type": "date", "faker": "date_this_decade"},
+        ])
+        clock = {"t": datetime(2025, 3, 1, 9, 0, 0)}
+        real = _dt.datetime
+
+        class _Advancing(real):
+            @classmethod
+            def now(cls, tz=None):
+                clock["t"] += timedelta(seconds=37)  # time moves between calls
+                return clock["t"] if tz is None else clock["t"].replace(tzinfo=tz)
+
+        monkeypatch.setattr(_dt, "datetime", _Advancing)
+        a = "".join(stream_rows(s, 30, export_format="csv", seed=7))
+        b = "".join(stream_rows(s, 30, export_format="csv", seed=7))
+        assert a == b, "seeded relative-date output drifted with the wall clock"
 
     def test_row_count_and_headers(self, tmp_path):
         s = _schema([{"name": "x", "type": "integer", "faker": "random_int"},

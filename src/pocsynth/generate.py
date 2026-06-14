@@ -8,6 +8,7 @@ when seeded, touching no AWS. This is the free half of the pipeline.
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import io
 import json
@@ -16,6 +17,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -27,9 +29,41 @@ from pocsynth.errors import SchemaError
 
 EventCallback = Callable[..., None] | None
 
+# A fixed reference instant for seeded generation. Faker's relative-date
+# providers (date_this_year, date_of_birth, date_time_this_month, …) anchor on
+# datetime.now(), so without this the same seed produces different absolute
+# dates on different runs — breaking the byte-reproducibility `--seed` promises.
+# We freeze "now" to this instant whenever a seed is set; unseeded runs keep the
+# live clock.
+_SEEDED_NOW = datetime(2025, 1, 1, 0, 0, 0)
+
 
 def _noop(*_a, **_k) -> None:
     pass
+
+
+@contextlib.contextmanager
+def _frozen_clock(enabled: bool):
+    """Pin Faker's date-provider clock to _SEEDED_NOW so seeded date/datetime
+    fields are byte-reproducible regardless of wall-clock time. No-op when
+    disabled (unseeded runs). Restores the real datetime on exit."""
+    if not enabled:
+        yield
+        return
+    import faker.providers.date_time as _dt
+
+    real = _dt.datetime
+
+    class _Frozen(real):  # type: ignore[misc, valid-type]
+        @classmethod
+        def now(cls, tz=None):
+            return _SEEDED_NOW if tz is None else _SEEDED_NOW.replace(tzinfo=tz)
+
+    _dt.datetime = _Frozen
+    try:
+        yield
+    finally:
+        _dt.datetime = real
 
 
 # A compact, deterministic regex->string generator (Faker 37 has no regexify).
@@ -332,11 +366,12 @@ def run_generation(cfg: GenerateConfig, on_event: EventCallback = None) -> dict[
     start = time.monotonic()
     emit("generation_started", rows=cfg.rows, fields=len(names))
     rows: list[dict[str, Any]] = []
-    for i in range(cfg.rows):
-        row = {name: gen() for name, _ftype, gen in generators}
-        rows.append(row)
-        if cfg.rows and (i + 1) % 1000 == 0:
-            emit("rows_generated", done=i + 1, of=cfg.rows)
+    with _frozen_clock(cfg.seed is not None):
+        for i in range(cfg.rows):
+            row = {name: gen() for name, _ftype, gen in generators}
+            rows.append(row)
+            if cfg.rows and (i + 1) % 1000 == 0:
+                emit("rows_generated", done=i + 1, of=cfg.rows)
 
     parent = Path(cfg.output_dir) if cfg.output_dir else Path.cwd()
     parent.mkdir(parents=True, exist_ok=True)
@@ -408,25 +443,28 @@ def stream_rows(
     generators = _resolve_field_generators(schema, fake)
     names = [n for n, _t, _g in generators]
 
-    if export_format == "json":
-        yield "[\n"
-        for i in range(rows):
-            obj = {
-                name: schema_mod.serialize(gen(), ftype, "json")
-                for name, ftype, gen in generators
-            }
-            yield ("  " + json.dumps(obj)) + (",\n" if i < rows - 1 else "\n")
-        yield "]\n"
-    else:
-        buf = io.StringIO()
-        writer = csv.DictWriter(buf, fieldnames=names, lineterminator="\n")
-        writer.writeheader()
-        yield buf.getvalue()
-        for _ in range(rows):
-            buf.seek(0)
-            buf.truncate(0)
-            writer.writerow({
-                name: schema_mod.serialize(gen(), ftype, "csv")
-                for name, ftype, gen in generators
-            })
+    # Freeze the clock across all yields so seeded date fields are reproducible
+    # (see _frozen_clock); the context stays active for the generator's lifetime.
+    with _frozen_clock(seed is not None):
+        if export_format == "json":
+            yield "[\n"
+            for i in range(rows):
+                obj = {
+                    name: schema_mod.serialize(gen(), ftype, "json")
+                    for name, ftype, gen in generators
+                }
+                yield ("  " + json.dumps(obj)) + (",\n" if i < rows - 1 else "\n")
+            yield "]\n"
+        else:
+            buf = io.StringIO()
+            writer = csv.DictWriter(buf, fieldnames=names, lineterminator="\n")
+            writer.writeheader()
             yield buf.getvalue()
+            for _ in range(rows):
+                buf.seek(0)
+                buf.truncate(0)
+                writer.writerow({
+                    name: schema_mod.serialize(gen(), ftype, "csv")
+                    for name, ftype, gen in generators
+                })
+                yield buf.getvalue()
