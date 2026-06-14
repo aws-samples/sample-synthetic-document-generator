@@ -6,7 +6,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added — web UI: command-equivalent panel
-- Every UI preview now shows the **equivalent CLI and agent-skill commands** that reproduce the dataset — `pocsynth run …` and `./pocsynth.py --json run …` — as two labeled, copy-to-clipboard blocks. A teaching artifact so SAs can demonstrate the command line and customers can learn the workflow (CONTEXT: *Command equivalent*).
+- Every UI preview now shows how to **reproduce the dataset outside the browser** as two labeled, copy-to-clipboard blocks: the exact CLI command (`pocsynth run …`) and a plain-language **`/pocsynth` agent-skill request** (Kiro or Claude Code — the skill composes and runs the CLI for you, no flags to remember). A teaching artifact so SAs can demonstrate the command line and customers can learn the workflow (CONTEXT: *Command equivalent*).
 - Mirrors the user's selections: the composed prompt (pills) or the user's own text (custom) is shell-quoted into `--prompt`; document mode shows `run --document <your-file.pdf> --yes` with a placeholder + a note that the CLI does a fuller Bedrock extraction than the in-browser preview. Flags shown: `--rows`, `--seed`, `-o ./out`, `--yes`; defaulted flags omitted; `--format json` mentioned in the caption.
 - Prompts are quoted with `shlex.quote` (shell-injection-safe) and HTML-escaped for display. +4 UI tests (per-mode commands, flags, injection-safety). Docs updated (README, SKILL.md, both persona guides).
 

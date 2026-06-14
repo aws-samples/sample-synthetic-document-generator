@@ -38,17 +38,16 @@
   <text x="68" y="256" class="mono ink">priority, status, queue … Optimize for building and testing agents …'</text>
   <text x="68" y="288" class="mono"><tspan class="flag">--rows</tspan><tspan class="ink"> 1500 </tspan><tspan class="flag">--seed</tspan><tspan class="ink"> 42 </tspan><tspan class="flag">-o</tspan><tspan class="ink"> ./out </tspan><tspan class="flag">--yes</tspan></text>
 
-  <!-- Agent skill block -->
+  <!-- Agent skill block — a natural-language /pocsynth request -->
   <text x="48" y="372" class="lbl">AGENT SKILL · /pocsynth (KIRO OR CLAUDE CODE)</text>
   <rect class="copy" x="1060" y="356" width="92" height="26" rx="7"/>
   <text x="1106" y="374" text-anchor="middle" class="soft" font-size="11">copy</text>
-  <rect class="term" x="48" y="388" width="1104" height="124" rx="12"/>
-  <text x="68" y="418" class="mono"><tspan class="ink">./pocsynth.py </tspan><tspan class="clay">--json</tspan><tspan class="ink"> run </tspan><tspan class="flag">--prompt</tspan><tspan class="ink"> 'A realistic dataset of customer</tspan></text>
-  <text x="68" y="442" class="mono ink">support tickets … Optimize for building and testing agents …'</text>
-  <text x="68" y="474" class="mono"><tspan class="flag">--rows</tspan><tspan class="ink"> 1500 </tspan><tspan class="flag">--seed</tspan><tspan class="ink"> 42 </tspan><tspan class="flag">-o</tspan><tspan class="ink"> ./out </tspan><tspan class="flag">--yes</tspan></text>
+  <rect class="term" x="48" y="388" width="1104" height="96" rx="12"/>
+  <text x="68" y="424" class="mono"><tspan class="clay">/pocsynth</tspan><tspan class="ink"> generate a synthetic dataset of customer support</tspan></text>
+  <text x="68" y="452" class="mono ink">tickets for agent building — 1500 rows, seed 42, written to ./out</text>
 
   <!-- caption -->
-  <line x1="48" y1="546" x2="1152" y2="546" stroke="#3d3a35" stroke-width="1" stroke-dasharray="4 4"/>
-  <text x="48" y="574" class="soft" font-size="13">Reproduces this dataset from the same prompt. The agent-skill form is the <tspan class="teal">/pocsynth</tspan> skill</text>
-  <text x="48" y="594" class="soft" font-size="13">(Kiro or Claude Code); <tspan class="clay">--json</tspan> returns a machine-readable envelope.</text>
+  <line x1="48" y1="520" x2="1152" y2="520" stroke="#3d3a35" stroke-width="1" stroke-dasharray="4 4"/>
+  <text x="48" y="548" class="soft" font-size="13">The exact CLI command, or a plain-language request to the <tspan class="teal">/pocsynth</tspan> agent skill (Kiro or Claude</text>
+  <text x="48" y="568" class="soft" font-size="13">Code) — the skill composes and runs the CLI for you. Add <tspan class="teal">--format json</tspan> for JSON output.</text>
 </svg>

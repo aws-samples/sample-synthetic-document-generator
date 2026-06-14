@@ -312,15 +312,16 @@ class TestCommandPanel:
         assert r.status_code == 200
         t = r.text
         assert 'id="commands"' in t
-        # Both surfaces, the one-shot run verb, the composed prompt + flags.
+        # CLI surface: the exact one-shot run command with the composed prompt + flags.
         assert "pocsynth run --prompt" in t
-        assert "./pocsynth.py --json run --prompt" in t
         assert "--rows 2000" in t and "--seed 42" in t and "-o ./out" in t and "--yes" in t
-        # copy buttons present
+        # copy buttons present (one per surface)
         assert t.count('onclick="copyCmd(this)"') >= 2
-        # The agent-skill surface is the /pocsynth skill, usable from Kiro or
-        # Claude Code (not the synth-data skill).
-        assert "/pocsynth" in t
+        # Agent-skill surface is a NATURAL-LANGUAGE /pocsynth request — how you
+        # actually invoke the skill — NOT the underlying ./pocsynth.py command.
+        assert "/pocsynth generate" in t
+        assert "./pocsynth.py" not in t
+        # Usable from Kiro or Claude Code; not the synth-data skill.
         assert "Kiro" in t and "Claude Code" in t
         assert "synth-data" not in t
 
@@ -353,7 +354,9 @@ class TestCommandPanel:
         assert r.status_code == 200
         t = r.text
         assert "pocsynth run --document" in t
-        assert "./pocsynth.py --json run --document" in t
+        # Skill surface is a natural-language /pocsynth request naming the file.
+        assert "/pocsynth generate" in t
+        assert "./pocsynth.py" not in t
         # The CLI fuller-extraction caveat is stated.
         assert "full Bedrock extraction" in t
 

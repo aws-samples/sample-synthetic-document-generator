@@ -98,7 +98,7 @@ pocsynth ui                                                 # http://127.0.0.1:8
 
 Compose a dataset from pills (record type × scenario), describe one in your own words, or upload a seed document → preview 10 rows → download any size. Built with FastAPI + HTMX; calls the same core as the CLI.
 
-Every preview also shows the **equivalent CLI and agent-skill commands** (`pocsynth run …` / the `/pocsynth` skill's `./pocsynth.py --json run …`, usable from Kiro or Claude Code) that reproduce the same dataset — so an SA can demonstrate the command line to a customer, and a customer can learn the workflow. Copy-paste to run it outside the browser, in a script, or from an agent.
+Every preview also shows how to **reproduce the dataset outside the browser** two ways: the exact CLI command (`pocsynth run …`) and a plain-language **`/pocsynth` agent-skill request** (Kiro or Claude Code — the skill composes and runs the CLI for you). So an SA can demonstrate the command line to a customer, and a customer can learn the workflow.
 
 ![one-shot run demo](assets/demo-run.gif)
 

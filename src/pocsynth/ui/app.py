@@ -352,21 +352,36 @@ def _build_run_command(mode: str, *, prompt: str | None, document_name: str | No
     return " ".join(args)
 
 
+def _build_skill_request(mode: str, *, prompt: str | None, document_name: str | None,
+                         rows: int, seed: int) -> str:
+    """A NATURAL-LANGUAGE `/pocsynth` request — how you actually invoke the skill
+    in Kiro or Claude Code (the skill then composes + runs the CLI for you). NOT
+    the underlying ./pocsynth.py command."""
+    if mode == "document":
+        what = f"a synthetic dataset shaped like {document_name or 'my document'}"
+    elif mode == "custom":
+        # The user's own description; trim for a readable one-liner.
+        desc = (prompt or "").strip().rstrip(".")
+        what = f"a synthetic dataset of {desc}" if desc else "a synthetic dataset"
+    else:  # pills — short, friendly phrasing rather than the long composed prompt
+        what = "a synthetic dataset for this record type and scenario"
+    return (f"/pocsynth generate {what} — {int(rows)} rows, "
+            f"seed {int(seed)}, written to ./out")
+
+
 def _render_command_panel(mode: str, *, prompt: str | None = None,
                           document_name: str | None = None, rows: int, seed: int) -> str:
-    """Show the CLI + agent-skill commands that reproduce this dataset, so SAs and
-    customers can learn / demonstrate the command-line workflow (CONTEXT: Command
-    equivalent)."""
-    body = _build_run_command(mode, prompt=prompt, document_name=document_name,
-                              rows=rows, seed=seed)
-    cli = f"pocsynth {body}"
-    skill = f"./pocsynth.py --json {body}"
+    """Show how to reproduce this dataset two ways: the exact CLI command, and a
+    natural-language /pocsynth skill request (Kiro or Claude Code). A teaching
+    artifact for SAs and customers (CONTEXT: Command equivalent)."""
+    cli = "pocsynth " + _build_run_command(
+        mode, prompt=prompt, document_name=document_name, rows=rows, seed=seed)
+    skill = _build_skill_request(
+        mode, prompt=prompt, document_name=document_name, rows=rows, seed=seed)
 
-    # The agent-skill form is the bundled `/pocsynth` skill (works with Kiro or
-    # Claude Code); --json returns the machine-readable envelope.
     skill_note = (
-        "The agent-skill form is the <code>/pocsynth</code> skill (works with "
-        "Kiro or Claude Code); <code>--json</code> returns a machine-readable envelope."
+        "The <code>/pocsynth</code> skill (Kiro or Claude Code) takes a plain-language "
+        "request and composes + runs the CLI for you — no flags to remember."
     )
     if mode == "document":
         note = (
@@ -393,9 +408,9 @@ def _render_command_panel(mode: str, *, prompt: str | None = None,
     return (
         _COMMANDS_CSS
         + '<div id="commands">'
-        + '<h3 class="ch">Run this from the command line</h3>'
-        + '<p class="csub">The same dataset, reproducible outside the browser — '
-        + "for a demo, a script, or an agent.</p>"
+        + '<h3 class="ch">Reproduce this outside the browser</h3>'
+        + '<p class="csub">The exact CLI command, or a plain-language request to '
+        + "the /pocsynth agent skill — for a demo, a script, or an agent.</p>"
         + _block("CLI", cli)
         + _block("Agent skill · /pocsynth (Kiro or Claude Code)", skill)
         + f'<div class="cnote">{note}</div>'
