@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "name": "healthcare_lite_intake",
+  "description": "Healthcare-lite patient intake records (fully synthetic; no real PHI).",
+  "fields": [
+    {"name": "patient_name", "type": "string", "faker": "name", "description": "synthetic patient full name"},
+    {"name": "dob", "type": "date", "faker": "date_of_birth", "faker_args": {"minimum_age": 18, "maximum_age": 95}, "description": "date of birth"},
+    {"name": "mrn", "type": "string", "regex": "MRN-[0-9]{6}", "description": "medical record number"},
+    {"name": "state", "type": "string", "enum": ["CA", "NY", "TX", "FL", "WA"], "weights": {"CA": 0.3, "NY": 0.25, "TX": 0.2, "FL": 0.15, "WA": 0.1}, "description": "state of residence"},
+    {"name": "plan", "type": "string", "enum": ["Bronze", "Silver", "Gold", "Platinum"], "weights": {"Bronze": 0.35, "Silver": 0.3, "Gold": 0.25, "Platinum": 0.1}, "description": "insurance plan tier"},
+    {"name": "visit_type", "type": "string", "enum": ["new", "follow-up", "urgent"], "weights": {"new": 0.3, "follow-up": 0.55, "urgent": 0.15}, "description": "visit category"},
+    {"name": "last_visit", "type": "datetime", "faker": "date_time_this_year", "description": "timestamp of last visit"}
+  ]
+}

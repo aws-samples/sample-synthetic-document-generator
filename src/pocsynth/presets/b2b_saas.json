@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "name": "b2b_saas_accounts",
+  "description": "B2B SaaS customer accounts, one row per account.",
+  "fields": [
+    {"name": "account_id", "type": "string", "regex": "ACC-[0-9]{6}", "description": "account identifier"},
+    {"name": "company", "type": "string", "faker": "company", "description": "customer company name"},
+    {"name": "plan", "type": "string", "enum": ["Starter", "Pro", "Enterprise"], "weights": {"Starter": 0.55, "Pro": 0.3, "Enterprise": 0.15}, "description": "subscription tier"},
+    {"name": "seats", "type": "integer", "faker": "random_int", "faker_args": {"min": 1, "max": 500}, "description": "licensed seats"},
+    {"name": "mrr", "type": "number", "faker": "pyfloat", "faker_args": {"min_value": 50, "max_value": 50000, "right_digits": 2}, "description": "monthly recurring revenue (USD)"},
+    {"name": "region", "type": "string", "enum": ["NA", "EMEA", "APAC", "LATAM"], "weights": {"NA": 0.45, "EMEA": 0.3, "APAC": 0.18, "LATAM": 0.07}, "description": "sales region"},
+    {"name": "status", "type": "string", "enum": ["active", "trial", "churned"], "weights": {"active": 0.7, "trial": 0.2, "churned": 0.1}, "description": "account status"},
+    {"name": "signup_date", "type": "date", "faker": "date_this_decade", "description": "account creation date"}
+  ]
+}

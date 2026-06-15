@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "name": "contact_center_transcripts",
+  "description": "Contact-center call transcripts, one row per call (synthetic; seeds real-time-assist and RAG demos).",
+  "fields": [
+    {"name": "call_id", "type": "string", "regex": "CALL-[0-9]{10}", "description": "call identifier"},
+    {"name": "agent_id", "type": "string", "regex": "AGT-[0-9]{5}", "description": "agent identifier"},
+    {"name": "queue", "type": "string", "enum": ["sales", "support", "retention", "billing", "tech"], "weights": {"sales": 0.2, "support": 0.3, "retention": 0.15, "billing": 0.2, "tech": 0.15}, "description": "routing queue"},
+    {"name": "intent", "type": "string", "enum": ["cancel", "upgrade", "billing-dispute", "technical-issue", "general-inquiry", "complaint"], "weights": {"cancel": 0.12, "upgrade": 0.18, "billing-dispute": 0.2, "technical-issue": 0.25, "general-inquiry": 0.15, "complaint": 0.1}, "description": "detected caller intent (branchable)"},
+    {"name": "transcript", "type": "string", "faker": "text", "faker_args": {"max_nb_chars": 1200}, "description": "free-text full call transcript (retrievable body)"},
+    {"name": "disposition", "type": "string", "enum": ["resolved", "escalated", "callback-scheduled", "abandoned", "transferred"], "weights": {"resolved": 0.5, "escalated": 0.15, "callback-scheduled": 0.1, "abandoned": 0.1, "transferred": 0.15}, "description": "call disposition"},
+    {"name": "sentiment", "type": "string", "enum": ["negative", "neutral", "positive"], "weights": {"negative": 0.3, "neutral": 0.4, "positive": 0.3}, "description": "caller sentiment"},
+    {"name": "talk_time_seconds", "type": "integer", "faker": "random_int", "faker_args": {"min": 20, "max": 3600}, "description": "talk time in seconds"},
+    {"name": "csat", "type": "integer", "faker": "random_int", "faker_args": {"min": 1, "max": 5}, "description": "1-5 post-call satisfaction"},
+    {"name": "started_at", "type": "datetime", "faker": "date_time_this_month", "description": "call start timestamp"}
+  ]
+}

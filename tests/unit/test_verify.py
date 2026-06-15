@@ -1,0 +1,305 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+"""Unit tests for the offline safety-verification step (`verify`, ADR-0010)."""
+
+from __future__ import annotations
+
+import csv
+import json
+
+import pytest
+
+from pocsynth.verify import (
+    VerifyConfig,
+    _mask,
+    _real_pii_values,
+    run_verify,
+    verify_values,
+)
+
+
+def _sample(tmp_path, obj) -> str:
+    p = tmp_path / "sample.json"
+    p.write_text(json.dumps(obj), encoding="utf-8")
+    return str(p)
+
+
+def _rows(tmp_path, text, name="rows.csv") -> str:
+    p = tmp_path / name
+    p.write_text(text, encoding="utf-8")
+    return str(p)
+
+
+DISCOVERY_SAMPLE = {
+    "schema": 1, "source": "intake.pdf",
+    "fields": [
+        {"name": "ssn", "pii": True, "value_counts": {"555-22-7788": 1, "555-22-9001": 1}},
+        {"name": "state", "pii": False, "value_counts": {"CA": 3, "NY": 1}},
+    ],
+}
+
+
+class TestRealValueExtraction:
+    def test_discovery_collects_only_flagged_pii(self, tmp_path):
+        vals = _real_pii_values(DISCOVERY_SAMPLE, min_len=4)
+        assert vals == {"555-22-7788", "555-22-9001"}
+        # non-PII state codes are NOT candidates (allowed to survive as enums)
+        assert "CA" not in vals
+
+    def test_short_values_dropped(self):
+        s = {"fields": [{"name": "x", "pii": True, "value_counts": {"AB": 1, "ABCDE": 1}}]}
+        assert _real_pii_values(s, min_len=4) == {"ABCDE"}
+
+    def test_conform_sample_treats_all_record_values_as_real(self):
+        s = {"records": [{"name": "Alice Hernandez", "code": "X"}]}
+        vals = _real_pii_values(s, min_len=4)
+        assert "Alice Hernandez" in vals
+        assert "X" not in vals  # too short
+
+
+class TestVerdicts:
+    def test_clean_rows_pass(self, tmp_path):
+        sp = _sample(tmp_path, DISCOVERY_SAMPLE)
+        rp = _rows(tmp_path, "ssn,state\n111-00-0000,CA\n222-00-0000,NY\n")
+        res = run_verify(VerifyConfig(rows_path=rp, sample_path=sp))
+        assert res["verdict"] == "pass"
+        assert res["attestation"]["leaks"] == []
+
+    def test_real_value_in_rows_fails(self, tmp_path):
+        sp = _sample(tmp_path, DISCOVERY_SAMPLE)
+        rp = _rows(tmp_path, "ssn,state\n555-22-7788,CA\n")
+        res = run_verify(VerifyConfig(rows_path=rp, sample_path=sp))
+        assert res["verdict"] == "fail"
+        assert res["attestation"]["leaks"][0]["where"] == ["rows"]
+
+    def test_real_value_in_schema_enum_fails(self, tmp_path):
+        # Closes the fragment hole: a real value baked into a schema enum is a
+        # leak even when the rows themselves are clean.
+        sp = _sample(tmp_path, DISCOVERY_SAMPLE)
+        rp = _rows(tmp_path, "ssn,state\n111-00-0000,CA\n")
+        schema = {"schema": 1, "name": "t",
+                  "fields": [{"name": "ssn", "type": "string", "enum": ["555-22-7788"]}]}
+        res = run_verify(VerifyConfig(rows_path=rp, sample_path=sp, schema=schema))
+        assert res["verdict"] == "fail"
+        assert "schema" in res["attestation"]["leaks"][0]["where"]
+
+    def test_real_value_in_regex_pattern_fails(self, tmp_path):
+        sp = _sample(tmp_path, DISCOVERY_SAMPLE)
+        rp = _rows(tmp_path, "ssn\n111-00-0000\n")
+        schema = {"schema": 1, "name": "t",
+                  "fields": [{"name": "ssn", "type": "string", "regex": "555-22-7788"}]}
+        res = run_verify(VerifyConfig(rows_path=rp, sample_path=sp, schema=schema))
+        assert res["verdict"] == "fail"
+
+    def test_public_sample_is_not_applicable(self, tmp_path):
+        pub = {"schema": 1, "source": "cat.pdf",
+               "fields": [{"name": "sku", "pii": False, "value_counts": {"SKU-100": 1}}]}
+        sp = _sample(tmp_path, pub)
+        rp = _rows(tmp_path, "sku\nSKU-999\n")
+        res = run_verify(VerifyConfig(rows_path=rp, sample_path=sp))
+        assert res["verdict"] == "not_applicable"
+
+
+class TestAttestation:
+    def test_attestation_written_with_hashes_and_version(self, tmp_path):
+        sp = _sample(tmp_path, DISCOVERY_SAMPLE)
+        rp = _rows(tmp_path, "ssn\n111-00-0000\n")
+        res = run_verify(VerifyConfig(rows_path=rp, sample_path=sp, output_dir=str(tmp_path)))
+        att = res["attestation"]
+        assert att["verdict"] == "pass"
+        assert att["rows_sha256"] and len(att["rows_sha256"]) == 64
+        assert att["source_hash"] and att["tool_version"]
+        written = json.loads((tmp_path / "attestation.json").read_text())
+        assert written["verdict"] == "pass"
+
+    def test_attestation_masks_leaked_value(self, tmp_path):
+        # The attestation must NOT carry the full real value (would re-leak it).
+        sp = _sample(tmp_path, DISCOVERY_SAMPLE)
+        rp = _rows(tmp_path, "ssn\n555-22-7788\n")
+        res = run_verify(VerifyConfig(rows_path=rp, sample_path=sp, output_dir=str(tmp_path)))
+        blob = (tmp_path / "attestation.json").read_text()
+        assert "555-22-7788" not in blob
+        assert res["attestation"]["leaks"][0]["value_preview"] == _mask("555-22-7788")
+
+    def test_missing_sample_raises(self, tmp_path):
+        from pocsynth.errors import SchemaError
+        rp = _rows(tmp_path, "x\n1\n")
+        with pytest.raises(SchemaError):
+            run_verify(VerifyConfig(rows_path=rp, sample_path=str(tmp_path / "nope.json")))
+
+
+class TestConformPipeline:
+    def test_conform_real_record_value_leak_detected(self, tmp_path):
+        sample = {"schema": 1, "source": "claims.pdf",
+                  "records": [{"claimant": "Harold Webb", "amount": "4200.00"}]}
+        sp = _sample(tmp_path, sample)
+        rp = _rows(tmp_path, "claimant,amount\nHarold Webb,99.00\n")
+        res = run_verify(VerifyConfig(rows_path=rp, sample_path=sp))
+        assert res["verdict"] == "fail"
+
+
+class TestLeakFieldNaming:
+    def test_leak_names_its_source_field(self):
+        # value_fields maps a real value to the field it came from; the leak
+        # carries that field name so the UI panel can show "vin: ****".
+        verdict, leaks, _ = verify_values(
+            {"3R5UAL4YUKPYGF1GZ"},
+            "expiry,vin\n2015-08-18,3R5UAL4YUKPYGF1GZ\n",
+            schema=None,
+            value_fields={"3R5UAL4YUKPYGF1GZ": "vin"},
+        )
+        assert verdict == "fail"
+        assert leaks[0]["field"] == "vin"
+        assert leaks[0]["value_preview"] == _mask("3R5UAL4YUKPYGF1GZ")
+        # The full value is never in the leak record.
+        assert "3R5UAL4YUKPYGF1GZ" not in str(leaks)
+
+    def test_no_value_fields_omits_field_key(self):
+        _, leaks, _ = verify_values(
+            {"3R5UAL4YUKPYGF1GZ"}, "x\n3R5UAL4YUKPYGF1GZ\n", schema=None)
+        assert leaks and "field" not in leaks[0]
+
+
+class TestMalformedSchemaRobustness:
+    """verify is a safety gate — a malformed schema (e.g. a model-emitted
+    `fields: null`, or a non-list) must degrade gracefully, never crash."""
+
+    @pytest.mark.parametrize("schema", [
+        None, {}, {"fields": None}, {"fields": "notalist"},
+        {"fields": [None, "x", {"name": "a"}]}, {"fields": [{"enum": None}]},
+        # Truthy non-iterables must not crash the `for f in fields` loop, and a
+        # truthy non-list enum/weights must not crash the inner loops.
+        {"fields": 5}, {"fields": True},
+        {"fields": [{"name": "a", "enum": "CA", "weights": "x"}]},
+        {"fields": [{"enum": 7, "weights": 3}]},
+    ])
+    def test_verify_values_tolerates_bad_schema(self, schema):
+        verdict, leaks, scanned = verify_values(
+            {"secret_value_here"}, "rows with secret_value_here", schema)
+        # Still detects the rows leak; doesn't raise on the bad schema.
+        assert verdict == "fail"
+        assert any("rows" in lk["where"] for lk in leaks)
+
+
+class TestEscapedValueLeakDetection:
+    """A safety gate must not be defeated by serialization escaping. A real value
+    containing a quote/comma/newline/tab leaks into CSV as a doubled-quote cell
+    and into JSON as an escaped string; a raw-substring scan misses it. verify
+    scans decoded cell values too, so the leak is still caught (no fail-open)."""
+
+    @pytest.mark.parametrize("value", [
+        'Robert "Bob" Smith',          # embedded double-quote → CSV doubling
+        "O'Brien, Patrick James",      # comma forces CSV quoting
+        "line one\nline two secret",   # embedded newline (quoted CSV cell)
+        "tab\tseparated\tsecret",      # embedded tab
+        'quote " and comma , and \n',  # all at once
+    ])
+    def test_quoted_value_in_csv_is_caught(self, tmp_path, value):
+        sample = {"schema": 1, "source": "intake.pdf",
+                  "fields": [{"name": "nickname", "pii": True,
+                              "value_counts": {value: 1}}]}
+        sp = _sample(tmp_path, sample)
+        # Write the leaking value through a real CSV writer (does the escaping).
+        rp = tmp_path / "rows.csv"
+        with open(rp, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["nickname"])
+            w.writerow([value])
+        res = run_verify(VerifyConfig(rows_path=str(rp), sample_path=sp))
+        assert res["verdict"] == "fail", "escaped CSV value evaded the leak scan"
+
+    @pytest.mark.parametrize("value", [
+        'Robert "Bob" Smith',
+        "back\\slash and \"quote\" secret",
+        "unicode café señor secret",
+    ])
+    def test_escaped_value_in_json_is_caught(self, tmp_path, value):
+        sample = {"schema": 1, "source": "intake.pdf",
+                  "fields": [{"name": "nickname", "pii": True,
+                              "value_counts": {value: 1}}]}
+        sp = _sample(tmp_path, sample)
+        rp = tmp_path / "rows.json"
+        rp.write_text(json.dumps([{"nickname": value}]), encoding="utf-8")
+        res = run_verify(VerifyConfig(rows_path=str(rp), sample_path=sp,
+                                      rows_in_format="json"))
+        assert res["verdict"] == "fail", "escaped JSON value evaded the leak scan"
+
+    def test_clean_dataset_still_passes(self, tmp_path):
+        # The decoded scan must not introduce false positives on clean output.
+        sample = {"schema": 1, "source": "intake.pdf",
+                  "fields": [{"name": "nickname", "pii": True,
+                              "value_counts": {'Real "Person" Doe': 1}}]}
+        sp = _sample(tmp_path, sample)
+        rp = tmp_path / "rows.csv"
+        rp.write_text('nickname\n"Generated ""Synth"" Name"\nAnother One\n',
+                      encoding="utf-8")
+        res = run_verify(VerifyConfig(rows_path=str(rp), sample_path=sp))
+        assert res["verdict"] == "pass"
+
+    def test_decoder_never_crashes_on_malformed_rows(self):
+        # Truncated/garbage rows text must not raise; the raw scan still applies.
+        from pocsynth.verify import _decoded_rows_text
+        for bad in ['', '{"x":', '[{"a":1},', 'a,b\n"unterminated', '\x00\x01 x']:
+            _decoded_rows_text(bad)  # no exception
+        # A leak in unparseable text is still caught via the raw fallback.
+        v, leaks, _ = verify_values({"secret_value_here"},
+                                    'a,b\n"unterminated secret_value_here', schema=None)
+        assert v == "fail"
+
+    def test_truncated_json_rows_file_fails_closed(self, tmp_path):
+        # A safety gate must not silently under-scan. An incomplete JSON rows
+        # file (e.g. an interrupted stream) carrying an ESCAPED real value would
+        # otherwise fall back to a CSV decode that leaves `\"` intact → the value
+        # scans as clean (pass). run_verify must raise instead, not emit a verdict.
+        from pocsynth.errors import SchemaError
+        sample = {"schema": 1, "source": "x.pdf",
+                  "fields": [{"name": "nickname", "pii": True,
+                              "value_counts": {'Robert "Bob" Smith': 1}}]}
+        sp = _sample(tmp_path, sample)
+        rp = tmp_path / "rows.json"
+        # Truncated mid-array, with the escaped real value present.
+        rp.write_text('[\n  {"nickname": "Robert \\"Bob\\" Smith"},\n  {"nickname": "Rob',
+                      encoding="utf-8")
+        with pytest.raises(SchemaError):
+            run_verify(VerifyConfig(rows_path=str(rp), sample_path=sp,
+                                    rows_in_format="json"))
+
+    def test_complete_json_is_not_rejected(self, tmp_path):
+        # The fail-closed guard must only fire on INVALID JSON, never on a
+        # complete file (no false rejection of clean output).
+        sample = {"schema": 1, "source": "x.pdf",
+                  "fields": [{"name": "nickname", "pii": True,
+                              "value_counts": {"Real Person Name": 1}}]}
+        sp = _sample(tmp_path, sample)
+        rp = tmp_path / "rows.json"
+        rp.write_text(json.dumps([{"nickname": "Synthetic One"}]), encoding="utf-8")
+        res = run_verify(VerifyConfig(rows_path=str(rp), sample_path=sp,
+                                      rows_in_format="json"))
+        assert res["verdict"] == "pass"
+
+
+class TestLeakedFieldsReport:
+    """run_verify surfaces a deduped `leaked_fields` list (the field names a leak
+    was attributed to), threaded from the Sample's value→field mapping."""
+
+    def test_leaked_fields_names_the_pii_field(self, tmp_path):
+        sp = _sample(tmp_path, DISCOVERY_SAMPLE)
+        rp = _rows(tmp_path, "ssn,state\n555-22-7788,CA\n")
+        res = run_verify(VerifyConfig(rows_path=rp, sample_path=sp))
+        assert res["verdict"] == "fail"
+        assert res["leaked_fields"] == ["ssn"]
+
+    def test_leaked_fields_empty_on_pass(self, tmp_path):
+        sp = _sample(tmp_path, DISCOVERY_SAMPLE)
+        rp = _rows(tmp_path, "ssn,state\n111-00-0000,CA\n")
+        res = run_verify(VerifyConfig(rows_path=rp, sample_path=sp))
+        assert res["verdict"] == "pass"
+        assert res["leaked_fields"] == []
+
+    def test_leaked_fields_deduped_across_rows(self, tmp_path):
+        # The same field leaking on multiple rows is reported once.
+        sp = _sample(tmp_path, DISCOVERY_SAMPLE)
+        rp = _rows(tmp_path, "ssn,state\n555-22-7788,CA\n555-22-9001,NY\n")
+        res = run_verify(VerifyConfig(rows_path=rp, sample_path=sp))
+        assert res["verdict"] == "fail"
+        assert res["leaked_fields"] == ["ssn"]

@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "name": "utility_meter_reads",
+  "description": "Utility smart-meter reads, one row per interval reading (synthetic telemetry).",
+  "fields": [
+    {"name": "meter_id", "type": "string", "regex": "MTR-[0-9]{8}", "description": "meter identifier"},
+    {"name": "account_id", "type": "string", "regex": "UACC-[0-9]{7}", "description": "utility account identifier"},
+    {"name": "service_type", "type": "string", "enum": ["electric", "gas", "water"], "weights": {"electric": 0.5, "gas": 0.3, "water": 0.2}, "description": "metered service"},
+    {"name": "region", "type": "string", "enum": ["north", "south", "east", "west", "central"], "weights": {"north": 0.2, "south": 0.2, "east": 0.2, "west": 0.2, "central": 0.2}, "description": "grid region"},
+    {"name": "reading_kwh", "type": "number", "faker": "pyfloat", "faker_args": {"min_value": 0.0, "max_value": 48.0, "right_digits": 3}, "description": "interval consumption (kWh-equivalent)"},
+    {"name": "voltage", "type": "number", "faker": "pyfloat", "faker_args": {"min_value": 228.0, "max_value": 252.0, "right_digits": 1}, "description": "line voltage at read"},
+    {"name": "quality_flag", "type": "string", "enum": ["valid", "estimated", "missing", "tampered"], "weights": {"valid": 0.88, "estimated": 0.07, "missing": 0.03, "tampered": 0.02}, "description": "data quality flag"},
+    {"name": "read_at", "type": "datetime", "faker": "date_time_this_month", "description": "interval timestamp"}
+  ]
+}

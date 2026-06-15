@@ -1,0 +1,141 @@
+{
+  "skill": "pocsynth",
+  "description": "Behavioral evals for the pocsynth Claude Code skill. Each eval runs twice (with_skill, without_skill) and is graded by skills/pocsynth/agents/grader.md + deterministic script assertions.",
+  "evals": [
+    {
+      "id": "convert-confirm",
+      "name": "Convert in confirm mode",
+      "prompt": "I have a file called contract.pdf in the current directory. Convert it to synthetic HTML so I can share it with a partner.",
+      "files": ["contract.pdf"],
+      "expected_output": "Claude runs doctor first if this is a fresh env, then calls AskUserQuestion (1-2 calls total, with related options grouped — not one call per flag), then invokes ./skills/pocsynth/pocsynth.py --json convert contract.pdf with the confirmed flags. Final result.output.combined_path exists and exit is 0.",
+      "assertions": {
+        "deterministic": [
+          {"text": "final invocation exits 0", "kind": "exit_code", "expected": 0},
+          {"text": "stdout is a valid JSON success envelope", "kind": "json_ok_true"},
+          {"text": "result.output.combined_path exists on disk", "kind": "file_exists", "path_from": "$.result.output.combined_path"}
+        ],
+        "behavioral": [
+          {"text": "Claude called AskUserQuestion at least once before invoking convert"},
+          {"text": "Claude made at most 2 AskUserQuestion calls for the convert flags (related options grouped together, not one call per flag)"},
+          {"text": "Claude did NOT invent flag values the user hadn't specified"},
+          {"text": "Claude recognized 'share with a partner' as an external-sharing signal and favored --redact-values (or at minimum surfaced the choice)"}
+        ]
+      }
+    },
+    {
+      "id": "fast-mode",
+      "name": "Fast-mode skips confirmation",
+      "prompt": "Just convert contract.pdf. Use defaults. No questions.",
+      "files": ["contract.pdf"],
+      "expected_output": "Claude skips AskUserQuestion entirely and invokes with --model sonnet --format html --mode synthetic --pii-audit (the built-in defaults). Runs doctor first only if this is a fresh env. Exit 0.",
+      "assertions": {
+        "deterministic": [
+          {"text": "final invocation exits 0", "kind": "exit_code", "expected": 0},
+          {"text": "invocation included --mode synthetic", "kind": "invocation_contains", "arg": "--mode", "value": "synthetic"},
+          {"text": "invocation included --format html", "kind": "invocation_contains", "arg": "--format", "value": "html"}
+        ],
+        "behavioral": [
+          {"text": "Claude did NOT call AskUserQuestion for the convert flags"},
+          {"text": "Claude recognized 'no questions' as fast-mode phrasing"}
+        ]
+      }
+    },
+    {
+      "id": "doctor-first",
+      "name": "Doctor runs first in a new env",
+      "prompt": "Set me up to use pocsynth in this environment.",
+      "files": [],
+      "expected_output": "Claude's first action is ./skills/pocsynth/pocsynth.py --json doctor. If any check fails, Claude surfaces the failing check and its detail rather than proceeding.",
+      "assertions": {
+        "deterministic": [
+          {"text": "doctor was invoked", "kind": "invocation_contains", "arg": "positional", "value": "doctor"}
+        ],
+        "behavioral": [
+          {"text": "doctor was the FIRST pocsynth.py invocation"},
+          {"text": "if doctor failed, Claude surfaced the failing check name + detail to the user"}
+        ]
+      }
+    },
+    {
+      "id": "large-doc-warn",
+      "name": "Fast-mode still warns on large docs",
+      "prompt": "Convert 120-page-contract.pdf in fast mode.",
+      "files": ["120-page-contract.pdf"],
+      "expected_output": "Despite the 'fast mode' phrasing, Claude prompts via AskUserQuestion about the page count before running because the doc is >50 pages.",
+      "assertions": {
+        "deterministic": [],
+        "behavioral": [
+          {"text": "Claude called AskUserQuestion about the page count or cost before invoking convert"},
+          {"text": "Claude honored fast-mode for everything EXCEPT the page-count warning"}
+        ]
+      }
+    },
+    {
+      "id": "pii-audit-standalone",
+      "name": "Standalone pii-audit",
+      "prompt": "What PII is in output.html?",
+      "files": ["output.html"],
+      "expected_output": "Claude invokes ./skills/pocsynth/pocsynth.py --json pii-audit output.html and reports result.pii_audit.entities_found to the user.",
+      "assertions": {
+        "deterministic": [
+          {"text": "pii-audit subcommand invoked", "kind": "invocation_contains", "arg": "positional", "value": "pii-audit"},
+          {"text": "exit 0", "kind": "exit_code", "expected": 0}
+        ],
+        "behavioral": [
+          {"text": "Claude reported the entities_found value to the user"}
+        ]
+      }
+    },
+    {
+      "id": "redact-warn-on-share",
+      "name": "Warn about raw PII in audit CSV when sharing",
+      "prompt": "Convert sample.pdf for customer X and run the PII audit.",
+      "files": ["sample.pdf"],
+      "expected_output": "Claude either passes --redact-values automatically (because the stated goal is external sharing) OR prompts the user via AskUserQuestion about raw PII in the audit CSV before running.",
+      "assertions": {
+        "deterministic": [
+          {"text": "either --redact-values was passed, or AskUserQuestion mentioned raw PII"}
+        ],
+        "behavioral": [
+          {"text": "Claude recognized 'for customer X' as an external-sharing signal"},
+          {"text": "Claude either redacted automatically or explicitly surfaced the choice"}
+        ]
+      }
+    },
+    {
+      "id": "cost-estimate-before-expensive-run",
+      "name": "Pre-flight estimate before an expensive convert",
+      "prompt": "Convert 120-page-contract.pdf with Opus 4.6 in synthetic mode.",
+      "files": ["120-page-contract.pdf"],
+      "expected_output": "Claude calls `pocsynth --json estimate 120-page-contract.pdf --model opus` BEFORE invoking convert, surfaces the estimated total_cost_usd to the user via AskUserQuestion, and waits for confirmation (because Opus + 120 pages is an expensive run).",
+      "assertions": {
+        "deterministic": [
+          {"text": "estimate was invoked at least once", "kind": "invocation_contains", "arg": "positional", "value": "estimate"}
+        ],
+        "behavioral": [
+          {"text": "estimate was invoked BEFORE convert",  "_": "the first pocsynth invocation should be estimate, not convert"},
+          {"text": "the AskUserQuestion call that follows estimate includes the dollar figure from result.total_cost_usd"},
+          {"text": "Claude did NOT start convert without the user's explicit confirmation"}
+        ]
+      }
+    },
+    {
+      "id": "auth-failure-routing",
+      "name": "AWS auth failure surfaces the hint",
+      "prompt": "Convert sample.pdf.",
+      "files": ["sample.pdf"],
+      "setup": "AWS_PROFILE=pocsynth-test-nonexistent-profile",
+      "expected_output": "With a nonexistent AWS profile, Claude sees exit 4 with error.code=AWS_AUTH_FAILED and surfaces the credential-refresh hint to the user rather than silently retrying.",
+      "assertions": {
+        "deterministic": [
+          {"text": "convert exits 4", "kind": "exit_code", "expected": 4},
+          {"text": "error.code is AWS_AUTH_FAILED or AWS_AUTH_EXPIRED", "kind": "error_code_in", "values": ["AWS_AUTH_FAILED", "AWS_AUTH_EXPIRED"]}
+        ],
+        "behavioral": [
+          {"text": "Claude did NOT blindly retry the convert"},
+          {"text": "Claude surfaced error.hint to the user (mentioning AWS_PROFILE, aws sso login, or equivalent)"}
+        ]
+      }
+    }
+  ]
+}

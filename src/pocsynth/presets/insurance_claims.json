@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "name": "insurance_claims",
+  "description": "Insurance claims intake, one row per claim (fully synthetic; no real PII).",
+  "fields": [
+    {"name": "claim_id", "type": "string", "regex": "CLM-[0-9]{4}-[0-9]{6}", "description": "claim identifier"},
+    {"name": "policy_number", "type": "string", "regex": "POL-[A-Z]{2}[0-9]{7}", "description": "policy number"},
+    {"name": "claimant_name", "type": "string", "faker": "name", "description": "synthetic claimant full name"},
+    {"name": "claim_type", "type": "string", "enum": ["auto", "home", "health", "life", "liability"], "weights": {"auto": 0.4, "home": 0.25, "health": 0.2, "life": 0.05, "liability": 0.1}, "description": "line of business"},
+    {"name": "incident_state", "type": "string", "enum": ["CA", "TX", "FL", "NY", "IL", "PA", "OH"], "weights": {"CA": 0.22, "TX": 0.18, "FL": 0.16, "NY": 0.14, "IL": 0.1, "PA": 0.1, "OH": 0.1}, "description": "state where the incident occurred"},
+    {"name": "amount_claimed", "type": "number", "faker": "pyfloat", "faker_args": {"min_value": 250, "max_value": 75000, "right_digits": 2}, "description": "amount claimed (USD)"},
+    {"name": "status", "type": "string", "enum": ["submitted", "in_review", "approved", "denied", "paid"], "weights": {"submitted": 0.2, "in_review": 0.25, "approved": 0.2, "denied": 0.1, "paid": 0.25}, "description": "claim status"},
+    {"name": "channel", "type": "string", "enum": ["mail", "phone", "web", "agent"], "weights": {"mail": 0.25, "phone": 0.25, "web": 0.35, "agent": 0.15}, "description": "intake channel"},
+    {"name": "filed_date", "type": "date", "faker": "date_this_year", "description": "date the claim was filed"}
+  ]
+}

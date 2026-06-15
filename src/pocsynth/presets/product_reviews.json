@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "name": "product_reviews",
+  "description": "Product reviews, one row per review (synthetic; seeds review-aggregation and sentiment demos).",
+  "fields": [
+    {"name": "review_id", "type": "string", "regex": "REV-[0-9]{9}", "description": "review identifier"},
+    {"name": "product_name", "type": "string", "faker": "catch_phrase", "description": "synthetic product name"},
+    {"name": "category", "type": "string", "enum": ["electronics", "home", "beauty", "apparel", "grocery", "toys", "sports"], "weights": {"electronics": 0.2, "home": 0.18, "beauty": 0.14, "apparel": 0.16, "grocery": 0.12, "toys": 0.1, "sports": 0.1}, "description": "product category"},
+    {"name": "rating", "type": "integer", "faker": "random_int", "faker_args": {"min": 1, "max": 5}, "description": "1-5 star rating"},
+    {"name": "title", "type": "string", "faker": "sentence", "faker_args": {"nb_words": 6}, "description": "review title"},
+    {"name": "body", "type": "string", "faker": "paragraph", "faker_args": {"nb_sentences": 5}, "description": "free-text review body (retrievable)"},
+    {"name": "verified_purchase", "type": "boolean", "faker": "boolean", "faker_args": {"chance_of_getting_true": 75}, "description": "verified-purchase flag"},
+    {"name": "helpful_votes", "type": "integer", "faker": "random_int", "faker_args": {"min": 0, "max": 5000}, "description": "helpful votes"},
+    {"name": "sentiment", "type": "string", "enum": ["negative", "neutral", "positive"], "weights": {"negative": 0.2, "neutral": 0.2, "positive": 0.6}, "description": "labeled sentiment"},
+    {"name": "submitted_at", "type": "datetime", "faker": "date_time_this_year", "description": "review submission timestamp"}
+  ]
+}

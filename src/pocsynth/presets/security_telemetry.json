@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "name": "security_telemetry",
+  "description": "Security signal / auth-event telemetry, one row per event (synthetic; seeds detection demos).",
+  "fields": [
+    {"name": "event_id", "type": "string", "faker": "uuid4", "description": "event identifier"},
+    {"name": "username", "type": "string", "faker": "user_name", "description": "synthetic account username"},
+    {"name": "source_ip", "type": "string", "faker": "ipv4", "description": "source IP address"},
+    {"name": "event_type", "type": "string", "enum": ["login_success", "login_failure", "mfa_challenge", "password_reset", "privilege_escalation", "api_key_used"], "weights": {"login_success": 0.55, "login_failure": 0.2, "mfa_challenge": 0.12, "password_reset": 0.05, "privilege_escalation": 0.03, "api_key_used": 0.05}, "description": "telemetry event type"},
+    {"name": "geo", "type": "string", "enum": ["US", "GB", "DE", "IN", "BR", "JP", "AU", "NG"], "weights": {"US": 0.4, "GB": 0.12, "DE": 0.1, "IN": 0.12, "BR": 0.08, "JP": 0.08, "AU": 0.05, "NG": 0.05}, "description": "geo of source IP"},
+    {"name": "device_os", "type": "string", "enum": ["windows", "macos", "linux", "ios", "android"], "weights": {"windows": 0.4, "macos": 0.25, "linux": 0.1, "ios": 0.15, "android": 0.1}, "description": "originating device OS"},
+    {"name": "risk_score", "type": "integer", "faker": "random_int", "faker_args": {"min": 0, "max": 100}, "description": "0-100 computed risk score"},
+    {"name": "outcome", "type": "string", "enum": ["allowed", "challenged", "blocked"], "weights": {"allowed": 0.78, "challenged": 0.15, "blocked": 0.07}, "description": "policy decision"},
+    {"name": "event_at", "type": "datetime", "faker": "date_time_this_month", "description": "event timestamp"}
+  ]
+}

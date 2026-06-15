@@ -1,0 +1,94 @@
+{
+  "skill": "synth-data",
+  "description": "Behavioral evals for the synth-data skill. The CLI lives at skills/pocsynth/pocsynth.py. generate/test/presets are free + offline; extract/schema-infer spend Bedrock and must be cost-gated.",
+  "evals": [
+    {
+      "id": "preset-dataset-free",
+      "name": "Preset dataset, free and offline",
+      "prompt": "Give me 500 rows of fake B2B SaaS customer data as CSV.",
+      "files": [],
+      "expected_output": "Claude recognizes a bundled preset fits, does NOT run doctor (no AWS needed), invokes ./skills/pocsynth/pocsynth.py --json generate --preset b2b_saas --rows 500 (csv), and validates with test. Exit 0; rows.csv on disk.",
+      "assertions": {
+        "deterministic": [
+          {"text": "generate invocation exits 0", "kind": "exit_code", "expected": 0},
+          {"text": "stdout is a valid JSON success envelope", "kind": "json_ok_true"},
+          {"text": "invocation used --preset", "kind": "invocation_contains", "arg": "--preset", "value": "b2b_saas"},
+          {"text": "rows file exists on disk", "kind": "file_exists", "path_from": "$.result.output.rows_path"}
+        ],
+        "behavioral": [
+          {"text": "Claude did NOT run doctor or any Bedrock call for this free path"},
+          {"text": "Claude treated generation as free (no cost gate / AskUserQuestion about spend)"},
+          {"text": "Claude validated the data with test after generating, or offered to"}
+        ]
+      }
+    },
+    {
+      "id": "validate-exit-7",
+      "name": "Validation failure routes on exit 7, no retry",
+      "prompt": "Validate ./out/rows.csv against ./out/schema.json — do the rows match the schema?",
+      "files": ["out/rows.csv", "out/schema.json"],
+      "expected_output": "Claude invokes ./skills/pocsynth/pocsynth.py --json test --rows ./out/rows.csv --schema ./out/schema.json. If exit 7, it surfaces result.context.report.violations and does NOT retry the same command.",
+      "assertions": {
+        "deterministic": [
+          {"text": "test command was invoked", "kind": "invocation_contains", "arg": "test", "value": ""}
+        ],
+        "behavioral": [
+          {"text": "On exit 7 Claude surfaced the violation summary (row/field/rule) rather than re-running"},
+          {"text": "Claude did not treat exit 7 as a transient/retryable error"}
+        ]
+      }
+    },
+    {
+      "id": "describe-business-prompt",
+      "name": "Describe a business -> schema -> data",
+      "prompt": "I don't have a sample file. Generate synthetic data for a fintech company's transaction records.",
+      "files": [],
+      "expected_output": "Claude runs doctor if fresh env, uses schema --from-prompt to infer a schema (mentions it spends a small amount of Bedrock), reviews the schema, then generate + test (free).",
+      "assertions": {
+        "deterministic": [
+          {"text": "schema --from-prompt was invoked", "kind": "invocation_contains", "arg": "--from-prompt", "value": ""}
+        ],
+        "behavioral": [
+          {"text": "Claude used schema --from-prompt (not extract — there is no document)"},
+          {"text": "Claude noted the from-prompt step spends Bedrock, but did not over-gate a pennies-level call"},
+          {"text": "Claude generated rows for free after inferring the schema"}
+        ]
+      }
+    },
+    {
+      "id": "full-pipeline-cost-gated",
+      "name": "Real PDF -> schema -> unlimited free rows, cost-gated",
+      "prompt": "I have report.pdf with real customer data. Make me 10,000 synthetic rows that look like it.",
+      "files": ["report.pdf"],
+      "expected_output": "Claude runs doctor (fresh env), runs estimate --for extract and surfaces the cost (AskUserQuestion if >$0.10) BEFORE extract, runs extract with the PII audit ON, infers a schema, then generate 10000 rows (free) + test. Communicates that generated data is shareable but the extract sample is not.",
+      "assertions": {
+        "deterministic": [
+          {"text": "estimate --for extract was invoked before extract", "kind": "invocation_contains", "arg": "--for", "value": "extract"},
+          {"text": "extract was invoked", "kind": "invocation_contains", "arg": "extract", "value": ""}
+        ],
+        "behavioral": [
+          {"text": "Claude ran estimate and surfaced the cost before the paid extract"},
+          {"text": "Claude did NOT pass --no-pii-audit on a real-customer-data document"},
+          {"text": "Claude generated the 10k rows for free from the inferred schema (did not loop paid calls)"},
+          {"text": "Claude communicated that the generated dataset is safe to share but the extract sample/audit CSV are not"}
+        ]
+      }
+    },
+    {
+      "id": "not-a-document-task",
+      "name": "Does not misroute a data request to document conversion",
+      "prompt": "Mock me a users table with 1000 rows.",
+      "files": [],
+      "expected_output": "Claude uses the data pipeline (preset or schema + generate), NOT convert. No PDF is required or requested.",
+      "assertions": {
+        "deterministic": [
+          {"text": "generate was invoked", "kind": "invocation_contains", "arg": "generate", "value": ""}
+        ],
+        "behavioral": [
+          {"text": "Claude did NOT try to convert a document or ask for a PDF"},
+          {"text": "Claude produced tabular rows via generate"}
+        ]
+      }
+    }
+  ]
+}
