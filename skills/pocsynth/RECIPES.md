@@ -256,7 +256,7 @@ the data generator in a browser".
 
 **Steps.**
 
-1. Requires the optional extra: `pip install 'pocsynth[ui]'`.
+1. Requires the optional extra: `uv tool install '.[ui]'`.
 2. `pocsynth ui` (serves on http://127.0.0.1:8000). The page offers three seed
    sources — preset (free), describe-a-business (paid), upload-a-document
    (paid, PII-audited) — a 10-row preview, and CSV/JSON download of any size.

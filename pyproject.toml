@@ -39,7 +39,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # Demo web UI only. NEVER imported by the CLI, the offline pipeline, or the
-# bundled `uv run --script` skill — install with `pip install 'pocsynth[ui]'`.
+# bundled `uv run --script` skill — install with `uv tool install '.[ui]'`.
 ui = [
   "fastapi>=0.115,<1",
   "uvicorn>=0.30,<1",

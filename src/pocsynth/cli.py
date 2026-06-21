@@ -644,7 +644,7 @@ def ui(
     host: Annotated[str, typer.Option("--host")] = "127.0.0.1",
     port: Annotated[int, typer.Option("--port")] = 8000,
 ) -> None:
-    """Launch the demo web UI (requires `pip install 'pocsynth[ui]'`)."""
+    """Launch the demo web UI (requires the optional [ui] extra: `uv tool install '.[ui]'`)."""
     try:
         import uvicorn  # noqa: F401
 
@@ -653,7 +653,7 @@ def ui(
         raise SchemaError(
             "the demo UI requires the optional [ui] extra",
             context={"missing": exc.name},
-            hint="pip install 'pocsynth[ui]'",
+            hint="uv tool install '.[ui]'  (or: uv pip install 'pocsynth[ui]')",
         ) from exc
     _stderr.print(f"[green]pocsynth UI[/] → http://{host}:{port}")
     import uvicorn

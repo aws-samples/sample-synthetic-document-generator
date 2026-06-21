@@ -94,7 +94,7 @@ A local web UI (Metabase-style) ships behind an optional extra:
 ![pocsynth web UI — compose a dataset like a sentence](assets/demo-ui.png)
 
 ```bash
-pip install 'pocsynth[ui]'
+uv tool install '.[ui]'                                     # CLI + web UI in one isolated env
 pocsynth ui                                                 # http://127.0.0.1:8000
 ```
 
@@ -244,7 +244,7 @@ Structured-data pipeline (see [above](#structured-data-pipeline)):
 | `pocsynth generate` | Generate synthetic rows from a schema/preset (free, offline, seeded). |
 | `pocsynth test` | Validate rows against a schema (free; exit 7 if invalid). |
 | `pocsynth verify` | Scan rows + schema for real source PII (free; exit 8 if leaked). |
-| `pocsynth ui` | Launch the demo web UI (`pip install 'pocsynth[ui]'`). |
+| `pocsynth ui` | Launch the demo web UI (`uv tool install '.[ui]'`). |
 
 #### Key `convert` flags
 
