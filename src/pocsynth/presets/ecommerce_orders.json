@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "name": "ecommerce_orders",
+  "description": "E-commerce orders, one row per order.",
+  "fields": [
+    {"name": "order_id", "type": "string", "regex": "ORD-[0-9]{8}", "description": "order identifier"},
+    {"name": "customer_email", "type": "string", "faker": "safe_email", "description": "customer email"},
+    {"name": "sku", "type": "string", "regex": "SKU-[0-9]{5}", "description": "product SKU"},
+    {"name": "category", "type": "string", "enum": ["Apparel", "Electronics", "Home", "Toys", "Grocery"], "weights": {"Apparel": 0.3, "Electronics": 0.25, "Home": 0.2, "Toys": 0.1, "Grocery": 0.15}, "description": "product category"},
+    {"name": "quantity", "type": "integer", "faker": "random_int", "faker_args": {"min": 1, "max": 10}, "description": "units ordered"},
+    {"name": "amount", "type": "number", "faker": "pyfloat", "faker_args": {"min_value": 5, "max_value": 2000, "right_digits": 2}, "description": "order total (USD)"},
+    {"name": "channel", "type": "string", "enum": ["web", "mobile", "marketplace"], "weights": {"web": 0.5, "mobile": 0.4, "marketplace": 0.1}, "description": "sales channel"},
+    {"name": "status", "type": "string", "enum": ["placed", "shipped", "delivered", "refunded"], "weights": {"placed": 0.15, "shipped": 0.2, "delivered": 0.55, "refunded": 0.1}, "description": "fulfillment status"},
+    {"name": "order_date", "type": "date", "faker": "date_this_year", "description": "date the order was placed"}
+  ]
+}

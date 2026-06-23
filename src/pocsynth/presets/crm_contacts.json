@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "name": "crm_contacts",
+  "description": "CRM contact records, one row per contact (fully synthetic).",
+  "fields": [
+    {"name": "contact_id", "type": "string", "regex": "CON-[0-9]{7}", "description": "contact identifier"},
+    {"name": "first_name", "type": "string", "faker": "first_name", "description": "synthetic first name"},
+    {"name": "last_name", "type": "string", "faker": "last_name", "description": "synthetic last name"},
+    {"name": "email", "type": "string", "faker": "safe_email", "description": "synthetic contact email"},
+    {"name": "company", "type": "string", "faker": "company", "description": "associated company"},
+    {"name": "title", "type": "string", "faker": "job", "description": "job title"},
+    {"name": "lead_source", "type": "string", "enum": ["web", "event", "referral", "outbound", "partner"], "weights": {"web": 0.35, "event": 0.15, "referral": 0.2, "outbound": 0.2, "partner": 0.1}, "description": "how the lead was acquired"},
+    {"name": "lifecycle_stage", "type": "string", "enum": ["subscriber", "lead", "mql", "sql", "customer", "evangelist"], "weights": {"subscriber": 0.25, "lead": 0.25, "mql": 0.2, "sql": 0.15, "customer": 0.12, "evangelist": 0.03}, "description": "funnel stage"},
+    {"name": "owner_region", "type": "string", "enum": ["NA", "EMEA", "APAC", "LATAM"], "weights": {"NA": 0.45, "EMEA": 0.3, "APAC": 0.18, "LATAM": 0.07}, "description": "sales territory"},
+    {"name": "lead_score", "type": "integer", "faker": "random_int", "faker_args": {"min": 0, "max": 100}, "description": "0-100 engagement score"},
+    {"name": "created_date", "type": "date", "faker": "date_this_decade", "description": "record creation date"}
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "name": "ad_campaign_performance",
+  "description": "Digital ad-campaign daily performance, one row per campaign-day (synthetic).",
+  "fields": [
+    {"name": "campaign_id", "type": "string", "regex": "CMP-[0-9]{6}", "description": "campaign identifier"},
+    {"name": "campaign_name", "type": "string", "faker": "catch_phrase", "description": "campaign name"},
+    {"name": "channel", "type": "string", "enum": ["search", "social", "display", "video", "email"], "weights": {"search": 0.3, "social": 0.28, "display": 0.18, "video": 0.14, "email": 0.1}, "description": "media channel"},
+    {"name": "objective", "type": "string", "enum": ["awareness", "consideration", "conversion", "retention"], "weights": {"awareness": 0.3, "consideration": 0.25, "conversion": 0.35, "retention": 0.1}, "description": "campaign objective"},
+    {"name": "impressions", "type": "integer", "faker": "random_int", "faker_args": {"min": 100, "max": 2000000}, "description": "ad impressions served"},
+    {"name": "clicks", "type": "integer", "faker": "random_int", "faker_args": {"min": 0, "max": 80000}, "description": "ad clicks"},
+    {"name": "conversions", "type": "integer", "faker": "random_int", "faker_args": {"min": 0, "max": 5000}, "description": "tracked conversions"},
+    {"name": "spend", "type": "number", "faker": "pyfloat", "faker_args": {"min_value": 5.0, "max_value": 40000.0, "right_digits": 2}, "description": "daily spend (USD)"},
+    {"name": "device", "type": "string", "enum": ["mobile", "desktop", "tablet", "ctv"], "weights": {"mobile": 0.55, "desktop": 0.3, "tablet": 0.08, "ctv": 0.07}, "description": "device type"},
+    {"name": "report_date", "type": "date", "faker": "date_this_year", "description": "performance date"}
+  ]
+}

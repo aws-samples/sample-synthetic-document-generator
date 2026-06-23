@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "name": "commercial_leases",
+  "description": "Commercial real-estate lease abstracts, one row per lease (synthetic; seeds document-extraction demos).",
+  "fields": [
+    {"name": "lease_id", "type": "string", "regex": "LSE-[0-9]{4}-[0-9]{5}", "description": "lease identifier"},
+    {"name": "tenant_name", "type": "string", "faker": "company", "description": "synthetic tenant company"},
+    {"name": "property_type", "type": "string", "enum": ["office", "retail", "industrial", "warehouse", "mixed-use", "medical"], "weights": {"office": 0.3, "retail": 0.2, "industrial": 0.15, "warehouse": 0.15, "mixed-use": 0.1, "medical": 0.1}, "description": "property type"},
+    {"name": "square_footage", "type": "integer", "faker": "random_int", "faker_args": {"min": 500, "max": 250000}, "description": "leased area (sq ft)"},
+    {"name": "base_rent_annual", "type": "number", "faker": "pyfloat", "faker_args": {"min_value": 12000, "max_value": 4500000, "right_digits": 2}, "description": "annual base rent (USD)"},
+    {"name": "rent_escalation_pct", "type": "number", "faker": "pyfloat", "faker_args": {"min_value": 0.0, "max_value": 5.0, "right_digits": 2}, "description": "annual escalation percent"},
+    {"name": "term_months", "type": "integer", "faker": "random_int", "faker_args": {"min": 12, "max": 180}, "description": "lease term in months"},
+    {"name": "renewal_option", "type": "string", "enum": ["none", "one-5yr", "two-5yr", "month-to-month"], "weights": {"none": 0.4, "one-5yr": 0.3, "two-5yr": 0.2, "month-to-month": 0.1}, "description": "renewal terms"},
+    {"name": "property_state", "type": "string", "enum": ["CA", "TX", "NY", "FL", "IL", "WA", "MA"], "weights": {"CA": 0.22, "TX": 0.18, "NY": 0.16, "FL": 0.14, "IL": 0.1, "WA": 0.1, "MA": 0.1}, "description": "state of the property"},
+    {"name": "clause_summary", "type": "string", "faker": "paragraph", "faker_args": {"nb_sentences": 5}, "description": "free-text summary of key lease clauses"},
+    {"name": "commencement_date", "type": "date", "faker": "date_this_decade", "description": "lease commencement date"}
+  ]
+}
